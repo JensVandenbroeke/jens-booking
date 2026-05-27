@@ -47,9 +47,14 @@ router.post('/book', async (req, res) => {
   };
 
   // Save to JSON file
-  const bookings = readBookings();
-  bookings.push(booking);
-  writeBookings(bookings);
+  try {
+    const bookings = readBookings();
+    bookings.push(booking);
+    writeBookings(bookings);
+  } catch (err) {
+    console.error('File write error:', err.message);
+    return res.status(500).json({ error: 'Failed to save booking.' });
+  }
 
   const transporter = createTransporter();
 
