@@ -28,6 +28,8 @@ export default function OpenConnectionFlow() {
   const [form, setForm] = useState(initialForm)
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [errors, setErrors] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [submitError, setSubmitError] = useState('')
 
   const isConfirmStep = step === LAST_STEP
 
@@ -52,6 +54,33 @@ export default function OpenConnectionFlow() {
     }
     if (step === 1 && !selectedSlot) return
     setStep((s) => s + 1)
+  }
+
+  const handleConfirm = async () => {
+    setLoading(true)
+    setSubmitError('')
+    try {
+      const res = await fetch('https://jens-booking-production.up.railway.app/api/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          whatsapp: form.phone,
+          language: LANGUAGES.find((l) => l.id === form.language)?.label ?? form.language,
+          type: 'Open Connection Call',
+          timeslot: format(selectedSlot, "yyyy-MM-dd HH:mm"),
+          topic: form.topic,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Booking failed')
+      setStep((s) => s + 1)
+    } catch (err) {
+      setSubmitError(err.message || 'Something went wrong. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleToggleSlot = (date, isCurrentlySelected) => {
@@ -239,14 +268,17 @@ export default function OpenConnectionFlow() {
         )}
 
         {!isConfirmStep && (
-          <div className="flex gap-3 mt-6">
+          <div className="flex flex-col gap-2 mt-6">
             <button
-              onClick={handleNext}
-              disabled={step === 1 && !selectedSlot}
+              onClick={step === 1 && selectedSlot ? handleConfirm : handleNext}
+              disabled={(step === 1 && !selectedSlot) || loading}
               className="btn-primary w-full"
             >
-              {step === 1 && selectedSlot ? 'Confirm booking' : 'Continue'}
+              {loading ? 'Submitting…' : step === 1 && selectedSlot ? 'Confirm booking' : 'Continue'}
             </button>
+            {submitError && (
+              <p className="text-red-400 text-xs text-center">{submitError}</p>
+            )}
           </div>
         )}
       </div>

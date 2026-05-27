@@ -46,6 +46,8 @@ export default function CoachingCallFlow() {
   const [form, setForm] = useState(initialForm)
   const [selectedSlots, setSelectedSlots] = useState([])
   const [errors, setErrors] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [submitError, setSubmitError] = useState('')
 
   const maxSlots = sessionType === '1on1' ? 1 : 3
   const isConfirmStep = step === LAST_STEP
@@ -90,6 +92,33 @@ export default function CoachingCallFlow() {
     }
     if (step === 2 && selectedSlots.length < maxSlots) return
     setStep((s) => s + 1)
+  }
+
+  const handleConfirm = async () => {
+    setLoading(true)
+    setSubmitError('')
+    try {
+      const res = await fetch('https://jens-booking-production.up.railway.app/api/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          whatsapp: form.phone,
+          language: LANGUAGES.find((l) => l.id === form.language)?.label ?? form.language,
+          type: sessionType === '1on1' ? '1-on-1 Coaching' : 'Group Coaching',
+          timeslot: selectedSlots.map((s) => format(s, "yyyy-MM-dd HH:mm")).join(' / '),
+          goals: form.goals,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Booking failed')
+      setStep((s) => s + 1)
+    } catch (err) {
+      setSubmitError(err.message || 'Something went wrong. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleToggleSlot = (date, isCurrentlySelected) => {
@@ -412,18 +441,23 @@ export default function CoachingCallFlow() {
         )}
 
         {!isConfirmStep && (
-          <div className="flex gap-3 mt-6">
+          <div className="flex flex-col gap-2 mt-6">
             <button
-              onClick={handleNext}
-              disabled={!canProceed()}
+              onClick={step === 2 && slotsReady ? handleConfirm : handleNext}
+              disabled={!canProceed() || loading}
               className="btn-primary w-full"
             >
-              {step === 2 && slotsReady
+              {loading
+                ? 'Submitting…'
+                : step === 2 && slotsReady
                 ? 'Confirm booking'
                 : step === 2
                 ? `Select ${maxSlots - selectedSlots.length} more slot${maxSlots - selectedSlots.length !== 1 ? 's' : ''}`
                 : 'Continue'}
             </button>
+            {submitError && (
+              <p className="text-red-400 text-xs text-center">{submitError}</p>
+            )}
           </div>
         )}
       </div>
