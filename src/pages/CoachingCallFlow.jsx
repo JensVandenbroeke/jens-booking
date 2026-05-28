@@ -107,7 +107,7 @@ export default function CoachingCallFlow() {
           whatsapp: form.phone,
           language: LANGUAGES.find((l) => l.id === form.language)?.label ?? form.language,
           type: sessionType === '1on1' ? '1-on-1 Coaching' : 'Group Coaching',
-          timeslot: selectedSlots.map((s) => format(s, "yyyy-MM-dd HH:mm")).join(' / '),
+          timeslot: selectedSlots.map((s) => s.toISOString()).join(' / '),
           goals: form.goals,
         }),
       })

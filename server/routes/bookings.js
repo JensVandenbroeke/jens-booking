@@ -33,12 +33,8 @@ function getCalendarClient() {
 async function createCalendarEvent(booking) {
   try {
     const calendar = getCalendarClient();
-    const [datePart, timePart] = booking.timeslot.split(' ');
-    const [year, month, day] = datePart.split('-').map(Number);
-    const [hour, minute] = timePart.split(':').map(Number);
-
     const durationMinutes = booking.type === 'Open Connection Call' ? 15 : 60;
-    const startDate = new Date(year, month - 1, day, hour, minute);
+    const startDate = new Date(booking.timeslot);
     const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
 
     await calendar.events.insert({

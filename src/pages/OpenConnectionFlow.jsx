@@ -69,7 +69,7 @@ export default function OpenConnectionFlow() {
           whatsapp: form.phone,
           language: LANGUAGES.find((l) => l.id === form.language)?.label ?? form.language,
           type: 'Open Connection Call',
-          timeslot: format(selectedSlot, "yyyy-MM-dd HH:mm"),
+          timeslot: selectedSlot.toISOString(),
           topic: form.topic,
         }),
       })
