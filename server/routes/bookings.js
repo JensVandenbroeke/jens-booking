@@ -42,8 +42,8 @@ async function createCalendarEvent(booking) {
       requestBody: {
         summary: `📞 ${booking.type} — ${booking.name}`,
         description: `Name: ${booking.name}\nEmail: ${booking.email}\nWhatsApp: ${booking.whatsapp}\nLanguage: ${booking.language}\nTopic: ${booking.topic || '—'}\nGoals: ${booking.goals || '—'}`,
-        start: { dateTime: startDate.toISOString(), timeZone: 'Europe/Lisbon' },
-        end: { dateTime: endDate.toISOString(), timeZone: 'Europe/Lisbon' },
+        start: { dateTime: startDate.toISOString() },
+        end: { dateTime: endDate.toISOString() },
         extendedProperties: {
           private: { booking: 'true', bookingId: String(booking.id) },
         },
@@ -91,19 +91,24 @@ bookings.push(booking);
     await resend.emails.send({
       from: FROM_ADDRESS,
       to: email,
-      subject: 'Booking Confirmation',
+      subject: `Your ${type} is confirmed ✓`,
       html: `
-        <h2>Hi ${name}, your booking is confirmed!</h2>
-        <ul>
-          <li><strong>Time slot:</strong> ${timeslot}</li>
-          <li><strong>Session type:</strong> ${type || '—'}</li>
-          <li><strong>Language:</strong> ${language || '—'}</li>
-          <li><strong>Topic:</strong> ${topic || '—'}</li>
-          <li><strong>Goals:</strong> ${goals || '—'}</li>
-          <li><strong>WhatsApp:</strong> ${whatsapp || '—'}</li>
-        </ul>
-        <p>Talk soon! — Jens</p>
-      `,
+    <div style="font-family: sans-serif; max-width: 520px; margin: 0 auto; color: #1a1a1a;">
+      <h2 style="margin-bottom: 4px;">Hey ${name} 👋</h2>
+      <p style="color: #555; margin-top: 0;">Your booking is confirmed. Here are the details:</p>
+      <div style="background: #f5f5f5; border-radius: 8px; padding: 16px 20px; margin: 20px 0;">
+        <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+          <tr><td style="padding: 6px 0; color: #888; width: 140px;">Session</td><td style="padding: 6px 0; font-weight: 600;">${type || '—'}</td></tr>
+          <tr><td style="padding: 6px 0; color: #888;">Time</td><td style="padding: 6px 0; font-weight: 600;">${new Date(booking.timeslot).toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/Lisbon' })} (Lisbon time)</td></tr>
+          <tr><td style="padding: 6px 0; color: #888;">Language</td><td style="padding: 6px 0;">${language || '—'}</td></tr>
+          ${topic ? `<tr><td style="padding: 6px 0; color: #888;">Topic</td><td style="padding: 6px 0;">${topic}</td></tr>` : ''}
+          ${goals ? `<tr><td style="padding: 6px 0; color: #888;">Goals</td><td style="padding: 6px 0;">${goals}</td></tr>` : ''}
+        </table>
+      </div>
+      <p style="font-size: 14px; color: #555;">I'll send you a link before the call. If you need to cancel or reschedule, reply to this email.</p>
+      <p style="margin-top: 32px; font-size: 14px;">Talk soon,<br><strong>Jens</strong></p>
+    </div>
+  `,
     });
 
     await resend.emails.send({
