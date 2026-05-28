@@ -2,11 +2,13 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { Resend } = require('resend');
+const { google } = require('googleapis');
 
 const router = express.Router();
 const DATA_FILE = path.join(__dirname, '../data/bookings.json');
 const OWNER_EMAIL = 'jens.vandenbroeke1@gmail.com';
 const FROM_ADDRESS = 'onboarding@resend.dev';
+const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 
 function readBookings() {
   const raw = fs.readFileSync(DATA_FILE, 'utf-8');
@@ -15,6 +17,45 @@ function readBookings() {
 
 function writeBookings(bookings) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(bookings, null, 2), 'utf-8');
+}
+
+function getCalendarClient() {
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    },
+    scopes: ['https://www.googleapis.com/auth/calendar'],
+  });
+  return google.calendar({ version: 'v3', auth });
+}
+
+async function createCalendarEvent(booking) {
+  try {
+    const calendar = getCalendarClient();
+    const [datePart, timePart] = booking.timeslot.split(' ');
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hour, minute] = timePart.split(':').map(Number);
+
+    const durationMinutes = booking.type === 'Open Connection Call' ? 15 : 60;
+    const startDate = new Date(year, month - 1, day, hour, minute);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+
+    await calendar.events.insert({
+      calendarId: CALENDAR_ID,
+      requestBody: {
+        summary: `📞 ${booking.type} — ${booking.name}`,
+        description: `Name: ${booking.name}\nEmail: ${booking.email}\nWhatsApp: ${booking.whatsapp}\nLanguage: ${booking.language}\nTopic: ${booking.topic || '—'}\nGoals: ${booking.goals || '—'}`,
+        start: { dateTime: startDate.toISOString(), timeZone: 'Europe/Lisbon' },
+        end: { dateTime: endDate.toISOString(), timeZone: 'Europe/Lisbon' },
+        extendedProperties: {
+          private: { booking: 'true', bookingId: String(booking.id) },
+        },
+      },
+    });
+  } catch (err) {
+    console.error('Calendar event creation failed:', err.message);
+  }
 }
 
 router.post('/book', async (req, res) => {
@@ -39,12 +80,14 @@ router.post('/book', async (req, res) => {
 
   try {
     const bookings = readBookings();
-    bookings.push(booking);
+bookings.push(booking);
     writeBookings(bookings);
   } catch (err) {
     console.error('File write error:', err.message);
     return res.status(500).json({ error: 'Failed to save booking.' });
   }
+
+  await createCalendarEvent(booking);
 
   const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -55,7 +98,6 @@ router.post('/book', async (req, res) => {
       subject: 'Booking Confirmation',
       html: `
         <h2>Hi ${name}, your booking is confirmed!</h2>
-        <p>Here are your booking details:</p>
         <ul>
           <li><strong>Time slot:</strong> ${timeslot}</li>
           <li><strong>Session type:</strong> ${type || '—'}</li>
@@ -64,8 +106,7 @@ router.post('/book', async (req, res) => {
           <li><strong>Goals:</strong> ${goals || '—'}</li>
           <li><strong>WhatsApp:</strong> ${whatsapp || '—'}</li>
         </ul>
-        <p>I'll be in touch shortly. Talk soon!</p>
-        <p>— Jens</p>
+        <p>Talk soon! — Jens</p>
       `,
     });
 
@@ -92,7 +133,7 @@ router.post('/book', async (req, res) => {
     console.error('Email error:', err.message);
     return res.status(200).json({
       success: true,
-      warning: 'Booking saved but email delivery failed. Check RESEND_API_KEY in .env.',
+      warning: 'Booking saved but email delivery failed.',
       booking,
     });
   }
