@@ -57,7 +57,7 @@ async function createCalendarEvent(booking) {
         conferenceData: {
           createRequest: {
             requestId: `booking-${booking.id}`,
-            conferenceSolutionKey: { type: 'hangoutsMeet' },
+            conferenceSolutionKey: { type: 'eventHangout' },
           },
         },
         extendedProperties: {
