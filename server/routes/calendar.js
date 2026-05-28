@@ -10,14 +10,15 @@ const OPEN_CALL_DURATION = 15;
 const BUFFER_MINUTES = 15;
 
 function getCalendarClient() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    },
-    scopes: ['https://www.googleapis.com/auth/calendar'],
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_OAUTH_CLIENT_ID,
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    'https://jens-booking-production.up.railway.app/auth/callback'
+  );
+  oauth2Client.setCredentials({
+    refresh_token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
   });
-  return google.calendar({ version: 'v3', auth });
+  return google.calendar({ version: 'v3', auth: oauth2Client });
 }
 
 router.get('/available-slots', async (req, res) => {
