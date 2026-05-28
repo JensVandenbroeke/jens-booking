@@ -6,6 +6,8 @@ const path = require('path');
 const bookingsRouter = require('./routes/bookings');
 const calendarRouter = require('./routes/calendar');
 const { google } = require('googleapis');
+const remindersRouter = require('./routes/reminders');
+const adminRouter = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +30,8 @@ app.use(express.json());
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.use('/api', bookingsRouter);
 app.use('/api', calendarRouter);
+app.use('/api', remindersRouter);
+app.use('/api/admin', adminRouter);
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_OAUTH_CLIENT_ID,
