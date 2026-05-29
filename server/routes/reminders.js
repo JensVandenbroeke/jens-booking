@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { sendEmail } = require('../lib/email');
+const { sendToGuest } = require('../lib/email');
 const { parsePrimaryTimeslot } = require('../lib/calendar');
 
 const router = express.Router();
@@ -47,7 +47,7 @@ router.get('/send-reminders', async (req, res) => {
       if (!callTime) continue;
       const hoursUntil = (callTime - now) / (1000 * 60 * 60);
       if (!booking.reminder24hSent && hoursUntil <= 24 && hoursUntil > 23) {
-        const result = await sendEmail({
+        const result = await sendToGuest({
           to: booking.email,
           subject: booking.language?.includes('Nederlands') ? 'Je call is morgen ⏰' : 'Your call is tomorrow ⏰',
           html: reminderHtml(booking, 24),
@@ -58,7 +58,7 @@ router.get('/send-reminders', async (req, res) => {
         }
       }
       if (!booking.reminder1hSent && hoursUntil <= 1 && hoursUntil > 0.83) {
-        const result = await sendEmail({
+        const result = await sendToGuest({
           to: booking.email,
           subject: booking.language?.includes('Nederlands') ? 'Je call begint over 1 uur ⏰' : 'Your call starts in 1 hour ⏰',
           html: reminderHtml(booking, 1),

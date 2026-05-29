@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { createCalendarEvent, deleteCalendarEvent, parsePrimaryTimeslot } = require('../lib/calendar');
-const { sendEmail, OWNER_EMAIL } = require('../lib/email');
+const { sendToGuest, sendToOwner, OWNER_EMAIL } = require('../lib/email');
 
 const router = express.Router();
 const APP_URL = 'https://book-a-call.jensvandenbroeke.com';
@@ -104,14 +104,18 @@ router.post('/book', async (req, res) => {
   const isNL = language?.includes('Nederlands');
   const emailWarnings = [];
 
-  const guestResult = await sendEmail({
+  const guestResult = await sendToGuest({
     to: email,
     subject: isNL ? `Je ${type} is bevestigd ✓` : `Your ${type} is confirmed ✓`,
     html: confirmationEmailHtml(booking, meetLink, language),
   });
-  if (!guestResult.ok) emailWarnings.push(`Guest email failed: ${guestResult.error}`);
+  if (!guestResult.ok) {
+    emailWarnings.push(`Guest email failed: ${guestResult.error}`);
+  } else {
+    console.log(`Guest confirmation sent to ${email} via ${guestResult.provider}`);
+  }
 
-  const ownerResult = await sendEmail({
+  const ownerResult = await sendToOwner({
     to: OWNER_EMAIL,
     subject: `New Booking #${bookingNumber} from ${name}`,
     html: ownerNotificationHtml({ bookingNumber, name, email, whatsapp, language, type, timeslot, topic, goals, meetLink }),
@@ -138,7 +142,7 @@ router.get('/cancel/:bookingId', async (req, res) => {
     }
     await db.cancelBooking(bookingId);
     await deleteCalendarEvent(String(bookingId));
-    await sendEmail({
+    await sendToOwner({
       to: OWNER_EMAIL,
       subject: `Booking #${booking.bookingNumber} cancelled by ${booking.name}`,
       html: `<p><strong>${booking.name}</strong> cancelled booking #${booking.bookingNumber} for ${formatEmailTime(booking.timeslot, 'en-GB')}.</p>`,
