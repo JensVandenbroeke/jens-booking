@@ -29,15 +29,37 @@ async function getUpcomingEvents() {
   const calendar = getCalendarClient();
   const now = new Date();
   const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-  const res = await calendar.events.list({
-    calendarId: CALENDAR_ID,
+  const params = {
     timeMin: now.toISOString(),
     timeMax: weekAhead.toISOString(),
     singleEvents: true,
     orderBy: 'startTime',
     maxResults: 20,
+  };
+
+  const calendarIds = ['primary'];
+  if (CALENDAR_ID && CALENDAR_ID !== 'primary') calendarIds.push(CALENDAR_ID);
+
+  const results = await Promise.all(
+    calendarIds.map(id => calendar.events.list({ calendarId: id, ...params }))
+  );
+
+  const seen = new Set();
+  const merged = [];
+  for (const res of results) {
+    for (const event of (res.data.items || [])) {
+      if (!seen.has(event.id)) {
+        seen.add(event.id);
+        merged.push(event);
+      }
+    }
+  }
+  merged.sort((a, b) => {
+    const ta = a.start.dateTime || a.start.date;
+    const tb = b.start.dateTime || b.start.date;
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
   });
-  return res.data.items || [];
+  return merged;
 }
 
 async function createCalendarEvent(summary, startTime, endTime, description = '') {
