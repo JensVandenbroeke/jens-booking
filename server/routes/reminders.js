@@ -37,6 +37,34 @@ function reminderHtml(booking, hoursUntil) {
   </div>`;
 }
 
+router.post('/reminders/send', async (req, res) => {
+  if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const now = new Date();
+    const bookings = await db.getBookings({ status: 'confirmed' });
+    let sent = 0;
+    for (const booking of bookings) {
+      const callTime = parsePrimaryTimeslot(booking.timeslot);
+      if (!callTime) continue;
+      const hoursUntil = (callTime - now) / (1000 * 60 * 60);
+      if (hoursUntil < 23 || hoursUntil > 25) continue;
+      const isNL = booking.language?.includes('Nederlands');
+      const result = await sendToGuest({
+        to: booking.email,
+        subject: isNL ? 'Herinnering: Je call met Jens morgen' : 'Reminder: Your call with Jens tomorrow',
+        html: reminderHtml(booking, 24),
+      });
+      if (result.ok) sent++;
+    }
+    res.json({ success: true, sent });
+  } catch (err) {
+    console.error('Reminder send error:', err.message);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
 router.get('/send-reminders', async (req, res) => {
   try {
     const bookings = await db.getBookingsForReminders();
