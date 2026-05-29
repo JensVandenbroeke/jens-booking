@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { initDb } = require('./db');
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -58,6 +59,11 @@ app.get('/auth/callback', async (req, res) => {
   `);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+initDb().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Database init failed:', err.message);
+  process.exit(1);
 });
