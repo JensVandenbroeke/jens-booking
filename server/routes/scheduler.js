@@ -112,8 +112,8 @@ router.post('/webhook', async (req, res) => {
     }
 
   } catch (err) {
-    console.error('Scheduler error:', err.message);
-    await sendTelegram('❌ Er ging iets mis. Probeer opnieuw.');
+    console.error('Scheduler error:', err.stack || err.message);
+    await sendTelegram(`❌ Fout: ${err.message}`);
   }
 });
 

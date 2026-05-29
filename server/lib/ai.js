@@ -18,6 +18,7 @@ async function askGemini(prompt) {
     }
   );
   const data = await res.json();
+  console.log('[askGemini] raw response:', JSON.stringify(data));
   return data.candidates[0].content.parts[0].text.trim();
 }
 
