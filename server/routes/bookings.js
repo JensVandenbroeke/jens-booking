@@ -7,6 +7,25 @@ const router = express.Router();
 const APP_URL = 'https://book-a-call.jensvandenbroeke.com';
 const API_URL = process.env.API_URL || 'https://jens-booking-production.up.railway.app';
 
+async function sendTelegramNotification(message) {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chatId) return;
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: 'HTML',
+      }),
+    });
+  } catch (err) {
+    console.error('Telegram notification failed:', err.message);
+  }
+}
+
 function formatEmailTime(isoString, language) {
   const primary = parsePrimaryTimeslot(isoString);
   if (!primary) return isoString;
@@ -95,6 +114,17 @@ router.post('/book', async (req, res) => {
 
   await db.saveBooking(booking);
 
+  await sendTelegramNotification(
+    `📅 <b>Nieuwe boeking #${bookingNumber}</b>\n\n` +
+    `👤 ${name}\n` +
+    `📧 ${email}\n` +
+    `📱 ${whatsapp || '—'}\n` +
+    `🌐 ${language || '—'}\n` +
+    `📋 ${type}\n` +
+    `⏰ ${formatEmailTime(timeslot, 'en-GB')}\n` +
+    `💬 ${topic || '—'}`
+  );
+
   const meetLink = await createCalendarEvent(booking, { attendeeEmails: [email] });
   if (meetLink) {
     await db.updateBookingMeetLink(booking.id, meetLink);
@@ -141,6 +171,12 @@ router.get('/cancel/:bookingId', async (req, res) => {
       return res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0a0a0a;color:white;"><h2>Already cancelled</h2><a href="${APP_URL}" style="display:inline-block;margin-top:20px;background:#6366f1;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;">Book a new call</a></body></html>`);
     }
     await db.cancelBooking(bookingId);
+    await sendTelegramNotification(
+      `❌ <b>Boeking geannuleerd #${booking.bookingNumber}</b>\n\n` +
+      `👤 ${booking.name}\n` +
+      `📋 ${booking.type}\n` +
+      `⏰ ${formatEmailTime(booking.timeslot, 'en-GB')}`
+    );
     await deleteCalendarEvent(String(bookingId));
     await sendToOwner({
       to: OWNER_EMAIL,
