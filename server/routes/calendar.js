@@ -1,5 +1,5 @@
 const express = require('express');
-const { google } = require('googleapis');
+const { getCalendarClient } = require('../lib/calendar');
 
 const router = express.Router();
 
@@ -8,18 +8,6 @@ const MIN_HOURS_AHEAD = 8;
 const MAX_DAYS_AHEAD = 4;
 const OPEN_CALL_DURATION = 15;
 const BUFFER_MINUTES = 15;
-
-function getCalendarClient() {
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_OAUTH_CLIENT_ID,
-    process.env.GOOGLE_OAUTH_CLIENT_SECRET,
-    'https://jens-booking-production.up.railway.app/auth/callback'
-  );
-  oauth2Client.setCredentials({
-    refresh_token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
-  });
-  return google.calendar({ version: 'v3', auth: oauth2Client });
-}
 
 router.get('/available-slots', async (req, res) => {
   try {

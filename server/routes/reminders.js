@@ -1,14 +1,15 @@
 const express = require('express');
-const { Resend } = require('resend');
 const db = require('../db');
+const { sendEmail } = require('../lib/email');
+const { parsePrimaryTimeslot } = require('../lib/calendar');
 
 const router = express.Router();
-const FROM_ADDRESS = 'onboarding@resend.dev';
 const APP_URL = 'https://book-a-call.jensvandenbroeke.com';
 const API_URL = 'https://jens-booking-production.up.railway.app';
 
 function formatEmailTime(isoString, language) {
-  const date = new Date(isoString);
+  const date = parsePrimaryTimeslot(isoString);
+  if (!date) return isoString;
   const locale = language?.includes('Nederlands') ? 'nl-BE' : 'en-GB';
   return date.toLocaleString(locale, { weekday:'long',year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Lisbon' }) + ' (Lisbon time)';
 }
@@ -40,20 +41,32 @@ router.get('/send-reminders', async (req, res) => {
   try {
     const bookings = await db.getBookingsForReminders();
     const now = new Date();
-    const resend = new Resend(process.env.RESEND_API_KEY);
     let sent = 0;
     for (const booking of bookings) {
-      const callTime = new Date(booking.timeslot);
+      const callTime = parsePrimaryTimeslot(booking.timeslot);
+      if (!callTime) continue;
       const hoursUntil = (callTime - now) / (1000 * 60 * 60);
       if (!booking.reminder24hSent && hoursUntil <= 24 && hoursUntil > 23) {
-        await resend.emails.send({ from: FROM_ADDRESS, to: booking.email, subject: booking.language?.includes('Nederlands') ? 'Je call is morgen ⏰' : 'Your call is tomorrow ⏰', html: reminderHtml(booking, 24) });
-        await db.markReminderSent(booking.id, '24h');
-        sent++;
+        const result = await sendEmail({
+          to: booking.email,
+          subject: booking.language?.includes('Nederlands') ? 'Je call is morgen ⏰' : 'Your call is tomorrow ⏰',
+          html: reminderHtml(booking, 24),
+        });
+        if (result.ok) {
+          await db.markReminderSent(booking.id, '24h');
+          sent++;
+        }
       }
       if (!booking.reminder1hSent && hoursUntil <= 1 && hoursUntil > 0.83) {
-        await resend.emails.send({ from: FROM_ADDRESS, to: booking.email, subject: booking.language?.includes('Nederlands') ? 'Je call begint over 1 uur ⏰' : 'Your call starts in 1 hour ⏰', html: reminderHtml(booking, 1) });
-        await db.markReminderSent(booking.id, '1h');
-        sent++;
+        const result = await sendEmail({
+          to: booking.email,
+          subject: booking.language?.includes('Nederlands') ? 'Je call begint over 1 uur ⏰' : 'Your call starts in 1 hour ⏰',
+          html: reminderHtml(booking, 1),
+        });
+        if (result.ok) {
+          await db.markReminderSent(booking.id, '1h');
+          sent++;
+        }
       }
     }
     res.json({ success: true, remindersSent: sent });

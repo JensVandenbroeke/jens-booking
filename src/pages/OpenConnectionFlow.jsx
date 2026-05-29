@@ -77,6 +77,9 @@ export default function OpenConnectionFlow() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Booking failed')
       setBookingResult(data.booking)
+      if (data.emailWarnings?.length) {
+        console.warn('Booking email warnings:', data.emailWarnings)
+      }
       setStep((s) => s + 1)
     } catch (err) {
       setSubmitError(err.message || 'Something went wrong. Please try again.')

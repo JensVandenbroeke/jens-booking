@@ -96,7 +96,9 @@ export default function CoachingCallFlow() {
           whatsapp: form.phone,
           language: LANGUAGES.find((l) => l.id === form.language)?.label ?? form.language,
           type: sessionType === '1on1' ? '1-on-1 Coaching' : 'Group Coaching',
-          timeslot: selectedSlots.map((s) => s.toISOString()).join(' / '),
+          timeslot: sessionType === '1on1'
+            ? selectedSlots[0].toISOString()
+            : selectedSlots.map((s) => s.toISOString()).join(' / '),
           goals: form.goals,
           topic: form.topic,
         }),
@@ -104,6 +106,9 @@ export default function CoachingCallFlow() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Booking failed')
       setBookingResult(data.booking)
+      if (data.emailWarnings?.length) {
+        console.warn('Booking email warnings:', data.emailWarnings)
+      }
       setStep((s) => s + 1)
     } catch (err) {
       setSubmitError(err.message || 'Something went wrong. Please try again.')
