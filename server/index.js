@@ -9,6 +9,7 @@ const calendarRouter = require('./routes/calendar');
 const { google } = require('googleapis');
 const remindersRouter = require('./routes/reminders');
 const adminRouter = require('./routes/admin');
+const schedulerRouter = require('./routes/scheduler');
 const groupSessionsRouter = require('./routes/groupSessions');
 
 const app = express();
@@ -35,6 +36,7 @@ app.use('/api', calendarRouter);
 app.use('/api', remindersRouter);
 app.use('/api', groupSessionsRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/scheduler', schedulerRouter);
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_OAUTH_CLIENT_ID,
