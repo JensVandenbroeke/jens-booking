@@ -19,6 +19,8 @@ async function askGemini(prompt) {
   );
   const data = await res.json();
   console.log('[askGemini] raw response:', JSON.stringify(data));
+  if (data.error) throw new Error('Gemini API error: ' + data.error.message);
+  if (!data.candidates || !data.candidates[0]) throw new Error('Gemini response: ' + JSON.stringify(data));
   return data.candidates[0].content.parts[0].text.trim();
 }
 
