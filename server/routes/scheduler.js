@@ -1,13 +1,11 @@
 const express = require('express');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { google } = require('googleapis');
+const { askAI } = require('../lib/ai');
 
 const router = express.Router();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 function getCalendarClient() {
   const oauth2Client = new google.auth.OAuth2(
@@ -63,7 +61,6 @@ async function processMessage(userMessage) {
   }).join('\n');
 
   const now = new Date().toISOString();
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const prompt = `Je bent een persoonlijke planning assistent voor Jens Vandenbroeke.
 Huidige tijd: ${now}
@@ -82,9 +79,7 @@ Je taken:
 
 Reageer ALTIJD in het Nederlands. Reageer ALLEEN met valid JSON, geen extra tekst.`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
-
+  const text = await askAI(prompt);
   const clean = text.replace(/```json|```/g, '').trim();
   return JSON.parse(clean);
 }
