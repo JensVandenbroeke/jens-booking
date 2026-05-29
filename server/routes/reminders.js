@@ -49,7 +49,7 @@ router.post('/reminders/send', async (req, res) => {
       const callTime = parsePrimaryTimeslot(booking.timeslot);
       if (!callTime) continue;
       const hoursUntil = (callTime - now) / (1000 * 60 * 60);
-      if (hoursUntil < 23 || hoursUntil > 25) continue;
+      if (hoursUntil < 23.75 || hoursUntil > 24.25) continue;
       const isNL = booking.language?.includes('Nederlands');
       const result = await sendToGuest({
         to: booking.email,
