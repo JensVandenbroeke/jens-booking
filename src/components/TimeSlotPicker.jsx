@@ -5,7 +5,7 @@ import {
   isSameMonth, isSameDay, isToday,
   addMonths, subMonths, startOfDay,
 } from 'date-fns'
-import { ChevronLeft, ChevronRight, Clock, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock, Loader2, Users } from 'lucide-react'
 
 const DAY_HEADERS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const API_BASE = 'https://jens-booking-production.up.railway.app'
@@ -15,15 +15,28 @@ export default function TimeSlotPicker({
   onToggleSlot,
   maxSlots = 1,
   label,
+  slots: slotsProp,
+  othersBySlot = {},
+  showGroupLegend = false,
 }) {
   const today = startOfDay(new Date())
   const [viewMonth, setViewMonth] = useState(startOfMonth(today))
   const [selectedDay, setSelectedDay] = useState(null)
   const [allSlots, setAllSlots] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!slotsProp)
   const [error, setError] = useState('')
 
   useEffect(() => {
+    if (slotsProp) {
+      setAllSlots(slotsProp.map((s) => ({
+        start: new Date(s.start),
+        end: new Date(s.end || s.start),
+      })))
+      setLoading(false)
+      setError('')
+      return
+    }
+
     async function fetchSlots() {
       setLoading(true)
       setError('')
@@ -31,26 +44,30 @@ export default function TimeSlotPicker({
         const res = await fetch(`${API_BASE}/api/available-slots`)
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Failed to load slots')
-        setAllSlots(data.slots.map(s => ({
+        setAllSlots(data.slots.map((s) => ({
           start: new Date(s.start),
           end: new Date(s.end),
         })))
-      } catch (err) {
+      } catch {
         setError('Could not load available times. Please refresh.')
       } finally {
         setLoading(false)
       }
     }
     fetchSlots()
-  }, [])
+  }, [slotsProp])
 
-  const slotsForDay = (day) =>
-    allSlots.filter(s => isSameDay(s.start, day))
+  const slotsForDay = (day) => allSlots.filter((s) => isSameDay(s.start, day))
 
   const dayHasSlots = (day) => slotsForDay(day).length > 0
 
   const isSlotSelected = (slot) =>
-    selectedSlots.some(s => s.getTime() === slot.start.getTime())
+    selectedSlots.some((s) => s.getTime() === slot.start.getTime())
+
+  const getOthersForSlot = (slot) => {
+    const key = String(slot.start.getTime())
+    return othersBySlot[key] || []
+  }
 
   const handleSlotClick = (slot) => {
     const isSelected = isSlotSelected(slot)
@@ -83,12 +100,30 @@ export default function TimeSlotPicker({
     <div>
       {label && <p className="text-sm font-medium text-zinc-400 mb-4">{label}</p>}
 
-      <div className="flex flex-col sm:flex-row gap-6">
+      {showGroupLegend && (
+        <div className="flex flex-wrap gap-3 mb-4 text-xs text-zinc-500">
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded border border-zinc-600 bg-zinc-800/60" />
+            Jens available
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded border border-emerald-600/60 bg-emerald-950/40" />
+            <Users size={11} className="text-emerald-500" />
+            Also picked by someone else
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded border border-indigo-500 bg-indigo-600/20" />
+            Your selection
+          </span>
+        </div>
+      )}
 
+      <div className="flex flex-col sm:flex-row gap-6">
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-4">
             <button
-              onClick={() => { setViewMonth(m => subMonths(m, 1)); setSelectedDay(null) }}
+              type="button"
+              onClick={() => { setViewMonth((m) => subMonths(m, 1)); setSelectedDay(null) }}
               disabled={!canGoPrev}
               className="p-1.5 rounded-lg hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
@@ -98,7 +133,8 @@ export default function TimeSlotPicker({
               {format(viewMonth, 'MMMM yyyy')}
             </span>
             <button
-              onClick={() => { setViewMonth(m => addMonths(m, 1)); setSelectedDay(null) }}
+              type="button"
+              onClick={() => { setViewMonth((m) => addMonths(m, 1)); setSelectedDay(null) }}
               className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
             >
               <ChevronRight size={16} />
@@ -106,21 +142,23 @@ export default function TimeSlotPicker({
           </div>
 
           <div className="grid grid-cols-7 mb-1">
-            {DAY_HEADERS.map(d => (
+            {DAY_HEADERS.map((d) => (
               <div key={d} className="text-center text-xs font-medium text-zinc-600 py-1">{d}</div>
             ))}
           </div>
 
           <div className="grid grid-cols-7 gap-y-0.5">
-            {calDays.map(day => {
+            {calDays.map((day) => {
               const inMonth = isSameMonth(day, viewMonth)
               const hasSlots = dayHasSlots(day)
               const isSelected = selectedDay && isSameDay(day, selectedDay)
               const isTodayDay = isToday(day)
+              const hasOthers = slotsForDay(day).some((s) => getOthersForSlot(s).length > 0)
 
               return (
                 <button
                   key={day.toISOString()}
+                  type="button"
                   onClick={() => inMonth && hasSlots && setSelectedDay(day)}
                   disabled={!inMonth || !hasSlots}
                   className={[
@@ -132,6 +170,9 @@ export default function TimeSlotPicker({
                   ].filter(Boolean).join(' ')}
                 >
                   {format(day, 'd')}
+                  {hasOthers && !isSelected && inMonth && (
+                    <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  )}
                   {isTodayDay && !isSelected && (
                     <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-indigo-400" />
                   )}
@@ -144,32 +185,42 @@ export default function TimeSlotPicker({
         <div className="hidden sm:block w-px bg-zinc-800 self-stretch" />
         <div className="sm:hidden h-px bg-zinc-800" />
 
-        <div className="w-full sm:w-40 shrink-0">
+        <div className="w-full sm:w-44 shrink-0">
           {selectedDay ? (
             <>
               <p className="text-sm font-semibold text-zinc-200 mb-3">
                 {format(selectedDay, 'EEE, MMM d')}
               </p>
-              <div className="space-y-1.5 max-h-80 overflow-y-auto pr-0.5">
-                {slotsForDay(selectedDay).map(slot => {
+              <div className="space-y-1.5 max-h-80 overflow-y-auto pr-0.5 scrollbar-dark">
+                {slotsForDay(selectedDay).map((slot) => {
                   const selected = isSlotSelected(slot)
                   const atMax = !selected && selectedSlots.length >= maxSlots
+                  const others = getOthersForSlot(slot)
+                  const hasOthers = others.length > 0
 
                   return (
                     <button
                       key={slot.start.toISOString()}
+                      type="button"
                       onClick={() => handleSlotClick(slot)}
                       disabled={atMax}
                       className={[
-                        'w-full py-2.5 px-4 rounded-xl text-sm font-medium border transition-all duration-150',
+                        'w-full py-2.5 px-3 rounded-xl text-sm font-medium border transition-all duration-150 text-left',
                         selected
                           ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300'
+                          : hasOthers
+                          ? 'bg-emerald-950/30 border-emerald-700/50 text-zinc-200 hover:border-emerald-500/60'
                           : atMax
                           ? 'bg-zinc-900/40 border-zinc-800 text-zinc-600 cursor-not-allowed'
                           : 'bg-zinc-800/60 border-zinc-700 text-zinc-300 hover:border-indigo-500/50 hover:bg-zinc-700/60 cursor-pointer',
                       ].join(' ')}
                     >
-                      {format(slot.start, 'HH:mm')}
+                      <span className="font-semibold">{format(slot.start, 'HH:mm')}</span>
+                      {hasOthers && (
+                        <span className="block text-[10px] text-emerald-400/90 mt-0.5 leading-tight truncate">
+                          {others.join(', ')}
+                        </span>
+                      )}
                     </button>
                   )
                 })}
@@ -191,7 +242,6 @@ export default function TimeSlotPicker({
             </div>
           )}
         </div>
-
       </div>
     </div>
   )

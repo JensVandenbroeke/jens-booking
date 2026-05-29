@@ -4,6 +4,7 @@ import OpenConnectionFlow from './pages/OpenConnectionFlow'
 import CoachingCallFlow from './pages/CoachingCallFlow'
 import Confirmation from './pages/Confirmation'
 import AdminPage from './pages/AdminPage'
+import GroupSchedulePage from './pages/GroupSchedulePage'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
       <Route path="/coaching-call" element={<CoachingCallFlow />} />
       <Route path="/confirmation" element={<Confirmation />} />
       <Route path="/admin" element={<AdminPage />} />
+      <Route path="/group/:token" element={<GroupSchedulePage />} />
     </Routes>
   )
 }

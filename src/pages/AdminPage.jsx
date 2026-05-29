@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
-import { Search, Download, LogOut, Calendar, List, Phone, Mail, Globe, Tag } from 'lucide-react'
+import { Search, Download, LogOut, Calendar, List, Phone, Mail, Globe, Tag, Users } from 'lucide-react'
+import AdminGroupSessions from '../components/AdminGroupSessions'
 
 const API_BASE = 'https://jens-booking-production.up.railway.app'
 
@@ -18,6 +19,7 @@ export default function AdminPage() {
   const [selected, setSelected] = useState(null)
   const [newPassword, setNewPassword] = useState('')
   const [pwMsg, setPwMsg] = useState('')
+  const [adminTab, setAdminTab] = useState('bookings')
 
   useEffect(() => {
     if (token) fetchBookings()
@@ -116,24 +118,48 @@ export default function AdminPage() {
       <div className="max-w-6xl mx-auto">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-zinc-100">Bookings</h1>
-            <p className="text-zinc-500 text-sm mt-1">{filtered.length} {filterStatus || 'total'}</p>
+            <h1 className="text-2xl font-bold text-zinc-100">Admin</h1>
+            <p className="text-zinc-500 text-sm mt-1">
+              {adminTab === 'bookings' ? `${filtered.length} bookings` : 'Group scheduling'}
+            </p>
           </div>
           <div className="flex items-center gap-3">
-            <button onClick={() => setView(v => v === 'table' ? 'calendar' : 'table')} className="btn-secondary flex items-center gap-2 text-sm">
-              {view === 'table' ? <><Calendar size={14} /> Calendar</> : <><List size={14} /> Table</>}
-            </button>
-            <button onClick={handleExport} className="btn-secondary flex items-center gap-2 text-sm">
-              <Download size={14} /> Export CSV
-            </button>
+            {adminTab === 'bookings' && (
+              <>
+                <button onClick={() => setView(v => v === 'table' ? 'calendar' : 'table')} className="btn-secondary flex items-center gap-2 text-sm">
+                  {view === 'table' ? <><Calendar size={14} /> Calendar</> : <><List size={14} /> Table</>}
+                </button>
+                <button onClick={handleExport} className="btn-secondary flex items-center gap-2 text-sm">
+                  <Download size={14} /> Export CSV
+                </button>
+              </>
+            )}
             <button onClick={handleLogout} className="btn-secondary flex items-center gap-2 text-sm text-zinc-500">
               <LogOut size={14} />
             </button>
           </div>
         </div>
 
+        <div className="flex gap-2 mb-8">
+          <button
+            onClick={() => setAdminTab('bookings')}
+            className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors ${adminTab === 'bookings' ? 'border-indigo-500 bg-indigo-900/20 text-indigo-300' : 'border-zinc-700 text-zinc-500'}`}
+          >
+            Bookings
+          </button>
+          <button
+            onClick={() => setAdminTab('groups')}
+            className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors flex items-center gap-2 ${adminTab === 'groups' ? 'border-violet-500 bg-violet-900/20 text-violet-300' : 'border-zinc-700 text-zinc-500'}`}
+          >
+            <Users size={14} /> Group scheduling
+          </button>
+        </div>
+
+        {adminTab === 'groups' && <AdminGroupSessions token={token} />}
+
+        {adminTab === 'bookings' && <>
         {/* Filters */}
         <div className="flex flex-wrap gap-3 mb-6">
           <div className="flex items-center gap-2 bg-zinc-800/60 border border-zinc-700 rounded-xl px-3 py-2 flex-1 min-w-48">
@@ -278,6 +304,8 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        </>}
 
         {/* Change password */}
         <div className="mt-12 glass-card p-6 max-w-sm">

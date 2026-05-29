@@ -95,7 +95,7 @@ router.post('/book', async (req, res) => {
 
   await db.saveBooking(booking);
 
-  const meetLink = await createCalendarEvent(booking);
+  const meetLink = await createCalendarEvent(booking, { attendeeEmails: [email] });
   if (meetLink) {
     await db.updateBookingMeetLink(booking.id, meetLink);
     booking.meetLink = meetLink;

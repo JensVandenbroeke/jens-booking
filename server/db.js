@@ -1,4 +1,6 @@
 const { Pool } = require('pg');
+const groupSessions = require('./db/groupSessions');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
@@ -18,6 +20,7 @@ async function initDb() {
     )
   `);
   await pool.query(`CREATE SEQUENCE IF NOT EXISTS booking_number_seq START 1001`);
+  await groupSessions.initGroupTables();
 }
 async function getNextBookingNumber() {
   const res = await pool.query("SELECT nextval('booking_number_seq') as num");

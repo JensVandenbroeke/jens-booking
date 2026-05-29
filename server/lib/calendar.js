@@ -54,7 +54,8 @@ function extractMeetLink(eventData) {
   return eventData.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri || null;
 }
 
-async function createCalendarEvent(booking) {
+async function createCalendarEvent(booking, options = {}) {
+  const attendeeEmails = options.attendeeEmails || [];
   if (!CALENDAR_ID) {
     console.error('Calendar: GOOGLE_CALENDAR_ID is not set');
     return null;
@@ -75,13 +76,14 @@ async function createCalendarEvent(booking) {
     const insertRes = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       conferenceDataVersion: 1,
-      sendUpdates: 'none',
+      sendUpdates: attendeeEmails.length > 0 ? 'all' : 'none',
       requestBody: {
         summary: `${booking.type} - ${booking.name} & Jens`,
         description: `Booking #${booking.bookingNumber}\nName: ${booking.name}\nEmail: ${booking.email}\nWhatsApp: ${booking.whatsapp || '-'}\nLanguage: ${booking.language}\nTimeslot: ${booking.timeslot}\nTopic: ${booking.topic || '-'}\nGoals: ${booking.goals || '-'}`,
         start: { dateTime: startDate.toISOString(), timeZone },
         end: { dateTime: endDate.toISOString(), timeZone },
         colorId: booking.type === 'Open Connection Call' ? '1' : '2',
+        attendees: attendeeEmails.map((e) => ({ email: e })),
         conferenceData: {
           createRequest: {
             requestId: `booking-${booking.id}-${Date.now()}`,
