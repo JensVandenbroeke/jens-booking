@@ -115,7 +115,20 @@ router.post('/book', async (req, res) => {
   const isNL = language?.includes('Nederlands');
   try {
     await resend.emails.send({ from: FROM_ADDRESS, to: email, subject: isNL ? `Je ${type} is bevestigd ✓` : `Your ${type} is confirmed ✓`, html: confirmationEmailHtml(booking, meetLink, language) });
-    await resend.emails.send({ from: FROM_ADDRESS, to: OWNER_EMAIL, subject: `New Booking #${bookingNumber} from ${name}`, html: `<p><strong>#${bookingNumber}</strong> — ${name} (${email}) booked <strong>${type}</strong> for ${formatEmailTime(timeslot, 'en-GB')}${meetLink ? `<br>Meet: <a href="${meetLink}">${meetLink}</a>` : ''}</p>` });
+    await resend.emails.send({ from: FROM_ADDRESS, to: OWNER_EMAIL, subject: `New Booking #${bookingNumber} from ${name}`, html: `<div style="font-family:sans-serif;max-width:520px;">
+  <h2>New Booking #${bookingNumber}</h2>
+  <table style="width:100%;font-size:14px;border-collapse:collapse;">
+    <tr><td style="padding:6px 0;color:#888;width:120px;">Name</td><td style="padding:6px 0;"><strong>${name}</strong></td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Email</td><td style="padding:6px 0;">${email}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">WhatsApp</td><td style="padding:6px 0;">${whatsapp || '—'}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Language</td><td style="padding:6px 0;">${language || '—'}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Type</td><td style="padding:6px 0;">${type || '—'}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Time</td><td style="padding:6px 0;">${formatEmailTime(timeslot, 'en-GB')}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Topic</td><td style="padding:6px 0;">${topic || '—'}</td></tr>
+    <tr><td style="padding:6px 0;color:#888;">Goals</td><td style="padding:6px 0;">${goals || '—'}</td></tr>
+    ${meetLink ? `<tr><td style="padding:6px 0;color:#888;">Meet</td><td style="padding:6px 0;"><a href="${meetLink}">${meetLink}</a></td></tr>` : ''}
+  </table>
+</div>` });
   } catch (err) { console.error('Email error:', err.message); }
   res.status(201).json({ success: true, booking });
 });
