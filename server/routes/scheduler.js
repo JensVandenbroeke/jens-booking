@@ -46,8 +46,14 @@ async function getUpcomingEvents() {
     maxResults: 20,
   };
 
-  const allCalendars = await getAllCalendars();
-  const calendarIds = allCalendars.map(c => c.id);
+  let calendarIds;
+  try {
+    const allCalendars = await getAllCalendars();
+    calendarIds = allCalendars.map(c => c.id);
+  } catch (err) {
+    console.error('getAllCalendars() failed, falling back to defaults:', err.message);
+    calendarIds = ['primary', CALENDAR_ID].filter(Boolean);
+  }
 
   const results = await Promise.all(
     calendarIds.map(id => calendar.events.list({ calendarId: id, ...params }))
