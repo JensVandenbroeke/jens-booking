@@ -7,6 +7,9 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 
+// In-memory conversation history: chatId -> array of {role, content}
+const conversationHistory = new Map();
+
 function getCalendarClient() {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -23,6 +26,12 @@ async function sendTelegram(text) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
   });
+}
+
+async function getAllCalendars() {
+  const calendar = getCalendarClient();
+  const res = await calendar.calendarList.list();
+  return (res.data.items || []).map(c => ({ id: c.id, name: c.summary }));
 }
 
 async function getUpcomingEvents() {
@@ -62,10 +71,10 @@ async function getUpcomingEvents() {
   return merged;
 }
 
-async function createCalendarEvent(summary, startTime, endTime, description = '') {
+async function createCalendarEvent(summary, startTime, endTime, description = '', calendarId = CALENDAR_ID) {
   const calendar = getCalendarClient();
   await calendar.events.insert({
-    calendarId: CALENDAR_ID,
+    calendarId,
     requestBody: {
       summary,
       description,
@@ -75,31 +84,61 @@ async function createCalendarEvent(summary, startTime, endTime, description = ''
   });
 }
 
-async function processMessage(userMessage) {
-  const events = await getUpcomingEvents();
+function getHistory(chatId) {
+  return conversationHistory.get(chatId) || [];
+}
+
+function saveHistory(chatId, userMessage, botResponse) {
+  const history = getHistory(chatId);
+  history.push({ role: 'user', content: userMessage });
+  history.push({ role: 'assistant', content: botResponse });
+  // Keep only last 10 messages (5 exchanges)
+  if (history.length > 10) history.splice(0, history.length - 10);
+  conversationHistory.set(chatId, history);
+}
+
+async function processMessage(userMessage, history = []) {
+  const [events, calendars] = await Promise.all([getUpcomingEvents(), getAllCalendars()]);
+
   const eventsText = events.map(e => {
     const start = e.start.dateTime || e.start.date;
     return `- ${e.summary} op ${start}`;
   }).join('\n');
 
+  const calendarsText = calendars.map(c => `- id: "${c.id}", naam: "${c.name}"`).join('\n');
+
+  const historyText = history.length
+    ? '\nGespreksgeschiedenis:\n' + history.map(m => `${m.role === 'user' ? 'Jens' : 'Assistent'}: ${m.content}`).join('\n')
+    : '';
+
   const now = new Date().toISOString();
 
   const prompt = `Je bent een persoonlijke planning assistent voor Jens Vandenbroeke.
 Huidige tijd: ${now}
+
+Beschikbare agenda's:
+${calendarsText || 'Geen agenda\'s gevonden'}
+
 Jens zijn agenda voor de komende week:
 ${eventsText || 'Geen afspraken gevonden'}
+${historyText}
 
 Bericht van Jens: "${userMessage}"
 
 Je taken:
 1. Als Jens iets wil inplannen, geef dan een JSON response met:
-   {"action": "create_event", "summary": "naam", "start": "ISO datetime", "end": "ISO datetime", "description": "optionele beschrijving", "message": "bevestiging voor Jens"}
+   {"action": "create_event", "summary": "naam", "start": "ISO datetime", "end": "ISO datetime", "description": "optionele beschrijving", "calendar_id": "id van de juiste agenda", "message": "bevestiging voor Jens"}
 2. Als Jens zijn agenda wil zien, geef dan:
    {"action": "show_agenda", "message": "overzicht van de agenda"}
 3. Voor andere vragen:
    {"action": "reply", "message": "jouw antwoord"}
 
-Reageer ALTIJD in het Nederlands. Reageer ALLEEN met valid JSON, geen extra tekst.`;
+Regels:
+- Reageer ALTIJD in het Nederlands.
+- Reageer ALLEEN met valid JSON, geen extra tekst.
+- Vraag NOOIT om informatie die al in de gespreksgeschiedenis of het huidige bericht staat.
+- Kies ALTIJD de meest passende agenda uit de beschikbare lijst op basis van de context.
+- Haal alle beschikbare info uit het bericht voordat je een follow-up vraag stelt.`;
 
   const text = await askAI(prompt);
   const clean = text.replace(/```json|```/g, '').trim();
@@ -124,14 +163,20 @@ router.post('/webhook', async (req, res) => {
 
     await sendTelegram('⏳ Even nadenken...');
 
-    const response = await processMessage(text);
+    const history = getHistory(chatId);
+    const response = await processMessage(text, history);
 
+    let botReply;
     if (response.action === 'create_event') {
-      await createCalendarEvent(response.summary, response.start, response.end, response.description);
-      await sendTelegram(`✅ ${response.message}`);
+      const calendarId = response.calendar_id || CALENDAR_ID;
+      await createCalendarEvent(response.summary, response.start, response.end, response.description, calendarId);
+      botReply = `✅ ${response.message}`;
     } else {
-      await sendTelegram(response.message);
+      botReply = response.message;
     }
+
+    await sendTelegram(botReply);
+    saveHistory(chatId, text, botReply);
 
   } catch (err) {
     console.error('Scheduler error:', err.stack || err.message);
