@@ -134,7 +134,7 @@ Je taken:
    {"action": "reply", "message": "jouw antwoord"}
 
 Regels:
-- Reageer ALTIJD in het Nederlands.
+- Detect the language Jens uses in his message and always respond in that same language. If he writes in Dutch, respond in Dutch. If he writes in English, respond in English.
 - Reageer ALLEEN met valid JSON, geen extra tekst.
 - Vraag NOOIT om informatie die al in de gespreksgeschiedenis of het huidige bericht staat.
 - Kies ALTIJD de meest passende agenda uit de beschikbare lijst op basis van de context.
