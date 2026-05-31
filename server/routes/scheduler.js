@@ -1,14 +1,186 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { askAI } = require('../lib/ai');
+const { getUserTimezone, saveUserTimezone } = require('../db');
 
 const router = express.Router();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 
-// In-memory conversation history: chatId -> array of {role, content}
+// In-memory conversation history: chatId -> [{role, content}]
 const conversationHistory = new Map();
+// chatIds that have had a timezone check prompt sent this process lifetime
+const timezoneChecked = new Set();
+// chatIds waiting for a typed country name
+const pendingTimezoneInput = new Map();
+
+// Countries with multiple timezones — show a second keyboard for zone selection
+const MULTI_TZ_COUNTRIES = {
+  'United States': [
+    { label: '🗽 Eastern',  tz: 'America/New_York' },
+    { label: '🏙️ Central',  tz: 'America/Chicago' },
+    { label: '🏔️ Mountain', tz: 'America/Denver' },
+    { label: '🌊 Pacific',  tz: 'America/Los_Angeles' },
+  ],
+  'Canada': [
+    { label: '🏙️ Eastern',  tz: 'America/Toronto' },
+    { label: '🌊 Pacific',  tz: 'America/Vancouver' },
+    { label: '🏔️ Mountain', tz: 'America/Edmonton' },
+    { label: '🌅 Atlantic', tz: 'America/Halifax' },
+  ],
+  'Australia': [
+    { label: '🌅 Eastern',  tz: 'Australia/Sydney' },
+    { label: '🏜️ Central',  tz: 'Australia/Adelaide' },
+    { label: '🌊 Western',  tz: 'Australia/Perth' },
+  ],
+  'Russia': [
+    { label: '🏙️ Moscow',       tz: 'Europe/Moscow' },
+    { label: '⛰️ Yekaterinburg', tz: 'Asia/Yekaterinburg' },
+    { label: '🌲 Novosibirsk',   tz: 'Asia/Novosibirsk' },
+    { label: '🌏 Vladivostok',   tz: 'Asia/Vladivostok' },
+  ],
+  'Brazil': [
+    { label: '🏙️ Brasília', tz: 'America/Sao_Paulo' },
+    { label: '🌿 Manaus',   tz: 'America/Manaus' },
+    { label: '🌅 Fortaleza', tz: 'America/Fortaleza' },
+  ],
+  'Mexico': [
+    { label: '🏙️ Mexico City', tz: 'America/Mexico_City' },
+    { label: '🌊 Pacific',     tz: 'America/Mazatlan' },
+    { label: '🌵 Mountain',    tz: 'America/Chihuahua' },
+  ],
+  'Indonesia': [
+    { label: '🏙️ Jakarta (WIB)', tz: 'Asia/Jakarta' },
+    { label: '🌴 Bali (WITA)',    tz: 'Asia/Makassar' },
+    { label: '🌏 Jayapura (WIT)', tz: 'Asia/Jayapura' },
+  ],
+  'Kazakhstan': [
+    { label: '🏙️ Almaty', tz: 'Asia/Almaty' },
+    { label: '🌅 Aktau',  tz: 'Asia/Aqtau' },
+  ],
+};
+
+// Aliases that map to a MULTI_TZ_COUNTRIES key
+const MULTI_TZ_ALIASES = {
+  'usa': 'United States',
+  'us': 'United States',
+  'america': 'United States',
+  'verenigde staten': 'United States',
+  'rusland': 'Russia',
+  'brazilië': 'Brazil',
+  'brasil': 'Brazil',
+  'australië': 'Australia',
+  'indonesië': 'Indonesia',
+  'kazachstan': 'Kazakhstan',
+};
+
+// Single-timezone country lookup (lowercase key -> {tz, country})
+const COUNTRY_SINGLE_TZ = {
+  'belgium': { tz: 'Europe/Brussels', country: 'Belgium' },
+  'belgië': { tz: 'Europe/Brussels', country: 'Belgium' },
+  'portugal': { tz: 'Europe/Lisbon', country: 'Portugal' },
+  'netherlands': { tz: 'Europe/Amsterdam', country: 'Netherlands' },
+  'holland': { tz: 'Europe/Amsterdam', country: 'Netherlands' },
+  'nederland': { tz: 'Europe/Amsterdam', country: 'Netherlands' },
+  'france': { tz: 'Europe/Paris', country: 'France' },
+  'frankrijk': { tz: 'Europe/Paris', country: 'France' },
+  'germany': { tz: 'Europe/Berlin', country: 'Germany' },
+  'duitsland': { tz: 'Europe/Berlin', country: 'Germany' },
+  'spain': { tz: 'Europe/Madrid', country: 'Spain' },
+  'spanje': { tz: 'Europe/Madrid', country: 'Spain' },
+  'italy': { tz: 'Europe/Rome', country: 'Italy' },
+  'italië': { tz: 'Europe/Rome', country: 'Italy' },
+  'uk': { tz: 'Europe/London', country: 'UK' },
+  'united kingdom': { tz: 'Europe/London', country: 'UK' },
+  'england': { tz: 'Europe/London', country: 'UK' },
+  'great britain': { tz: 'Europe/London', country: 'UK' },
+  'britain': { tz: 'Europe/London', country: 'UK' },
+  'ireland': { tz: 'Europe/Dublin', country: 'Ireland' },
+  'ierland': { tz: 'Europe/Dublin', country: 'Ireland' },
+  'switzerland': { tz: 'Europe/Zurich', country: 'Switzerland' },
+  'zwitserland': { tz: 'Europe/Zurich', country: 'Switzerland' },
+  'austria': { tz: 'Europe/Vienna', country: 'Austria' },
+  'oostenrijk': { tz: 'Europe/Vienna', country: 'Austria' },
+  'poland': { tz: 'Europe/Warsaw', country: 'Poland' },
+  'sweden': { tz: 'Europe/Stockholm', country: 'Sweden' },
+  'norway': { tz: 'Europe/Oslo', country: 'Norway' },
+  'denmark': { tz: 'Europe/Copenhagen', country: 'Denmark' },
+  'finland': { tz: 'Europe/Helsinki', country: 'Finland' },
+  'greece': { tz: 'Europe/Athens', country: 'Greece' },
+  'turkey': { tz: 'Europe/Istanbul', country: 'Turkey' },
+  'israel': { tz: 'Asia/Jerusalem', country: 'Israel' },
+  'india': { tz: 'Asia/Kolkata', country: 'India' },
+  'china': { tz: 'Asia/Shanghai', country: 'China' },
+  'japan': { tz: 'Asia/Tokyo', country: 'Japan' },
+  'south korea': { tz: 'Asia/Seoul', country: 'South Korea' },
+  'korea': { tz: 'Asia/Seoul', country: 'South Korea' },
+  'singapore': { tz: 'Asia/Singapore', country: 'Singapore' },
+  'thailand': { tz: 'Asia/Bangkok', country: 'Thailand' },
+  'vietnam': { tz: 'Asia/Ho_Chi_Minh', country: 'Vietnam' },
+  'uae': { tz: 'Asia/Dubai', country: 'UAE' },
+  'united arab emirates': { tz: 'Asia/Dubai', country: 'UAE' },
+  'dubai': { tz: 'Asia/Dubai', country: 'UAE' },
+  'south africa': { tz: 'Africa/Johannesburg', country: 'South Africa' },
+  'egypt': { tz: 'Africa/Cairo', country: 'Egypt' },
+  'nigeria': { tz: 'Africa/Lagos', country: 'Nigeria' },
+  'kenya': { tz: 'Africa/Nairobi', country: 'Kenya' },
+  'new zealand': { tz: 'Pacific/Auckland', country: 'New Zealand' },
+  'argentina': { tz: 'America/Argentina/Buenos_Aires', country: 'Argentina' },
+  'chile': { tz: 'America/Santiago', country: 'Chile' },
+  'colombia': { tz: 'America/Bogota', country: 'Colombia' },
+  'peru': { tz: 'America/Lima', country: 'Peru' },
+};
+
+// --- Timezone helpers ---
+
+function formatTimeInZone(isoString, timezone) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(isoString));
+  } catch {
+    return isoString;
+  }
+}
+
+function getCurrentTimeStr(timezone) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date());
+  } catch {
+    return '??:??';
+  }
+}
+
+// Returns {type:'single', tz, country} | {type:'multi', country, zones} | null
+function lookupCountry(input) {
+  const normalized = input.trim().toLowerCase();
+
+  const multiAlias = MULTI_TZ_ALIASES[normalized];
+  if (multiAlias) return { type: 'multi', country: multiAlias, zones: MULTI_TZ_COUNTRIES[multiAlias] };
+
+  for (const country of Object.keys(MULTI_TZ_COUNTRIES)) {
+    if (country.toLowerCase() === normalized) {
+      return { type: 'multi', country, zones: MULTI_TZ_COUNTRIES[country] };
+    }
+  }
+
+  const single = COUNTRY_SINGLE_TZ[normalized];
+  if (single) return { type: 'single', ...single };
+
+  return null;
+}
+
+// --- Calendar helpers ---
 
 function getCalendarClient() {
   const oauth2Client = new google.auth.OAuth2(
@@ -18,14 +190,6 @@ function getCalendarClient() {
   );
   oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN });
   return google.calendar({ version: 'v3', auth: oauth2Client });
-}
-
-async function sendTelegram(text) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
-  });
 }
 
 async function getAllCalendars() {
@@ -90,6 +254,131 @@ async function createCalendarEvent(summary, startTime, endTime, description = ''
   });
 }
 
+// --- Telegram helpers ---
+
+async function sendTelegram(text) {
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
+  });
+}
+
+async function sendInlineKeyboard(text, keyboard) {
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      reply_markup: { inline_keyboard: keyboard },
+    }),
+  });
+}
+
+async function answerCallbackQuery(callbackQueryId) {
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+  });
+}
+
+async function sendMultiTzKeyboard(country, zones) {
+  const rows = [];
+  for (let i = 0; i < zones.length; i += 2) {
+    rows.push(
+      zones.slice(i, i + 2).map(z => ({
+        text: `${z.label} — now ${getCurrentTimeStr(z.tz)}`,
+        callback_data: `tz_zone|${z.tz}|${country}`,
+      }))
+    );
+  }
+  await sendInlineKeyboard(
+    `${country} has multiple timezones. What time is it where you are?`,
+    rows
+  );
+}
+
+// --- Timezone check flow ---
+
+async function triggerTimezoneCheck(chatId, pref) {
+  timezoneChecked.add(chatId);
+  try {
+    if (pref?.timezone) {
+      const currentTime = getCurrentTimeStr(pref.timezone);
+      await sendInlineKeyboard(
+        `Are you still in ${pref.timezone_country}? (${pref.timezone} — it's now ${currentTime})`,
+        [[
+          { text: '✅ Yes, keep it', callback_data: 'tz_confirm' },
+          { text: '🌍 No, I moved',  callback_data: 'tz_reset' },
+        ]]
+      );
+    } else {
+      await sendInlineKeyboard(
+        "Where are you located? I'll use this to show times correctly.",
+        [[
+          { text: '🇧🇪 Belgium',       callback_data: 'tz_pick|Belgium' },
+          { text: '🇵🇹 Portugal',      callback_data: 'tz_pick|Portugal' },
+          { text: '✏️ Other country', callback_data: 'tz_pick|other' },
+        ]]
+      );
+    }
+  } catch (err) {
+    console.error('triggerTimezoneCheck error:', err.message);
+  }
+}
+
+async function handleCallbackQuery(update) {
+  const query = update.callback_query;
+  const chatId = String(query.message.chat.id);
+  const data = query.data;
+
+  await answerCallbackQuery(query.id);
+
+  if (data === 'tz_confirm') {
+    // User confirmed — nothing to change
+    return;
+  }
+
+  if (data === 'tz_reset') {
+    await sendInlineKeyboard('Where are you now?', [[
+      { text: '🇧🇪 Belgium',       callback_data: 'tz_pick|Belgium' },
+      { text: '🇵🇹 Portugal',      callback_data: 'tz_pick|Portugal' },
+      { text: '✏️ Other country', callback_data: 'tz_pick|other' },
+    ]]);
+    return;
+  }
+
+  if (data.startsWith('tz_pick|')) {
+    const choice = data.slice(8);
+    if (choice === 'other') {
+      pendingTimezoneInput.set(chatId, true);
+      await sendTelegram('Type your country name (in English or Dutch):');
+      return;
+    }
+    const result = lookupCountry(choice.toLowerCase());
+    if (result && result.type === 'single') {
+      await saveUserTimezone(chatId, result.tz, result.country);
+      const currentTime = getCurrentTimeStr(result.tz);
+      await sendTelegram(`✅ Timezone set to ${result.tz}. All times will now show in ${result.country} time. (It's currently ${currentTime})`);
+    }
+    return;
+  }
+
+  if (data.startsWith('tz_zone|')) {
+    // format: tz_zone|America/New_York|United States
+    const parts = data.slice(8).split('|');
+    const tz = parts[0];
+    const country = parts[1];
+    await saveUserTimezone(chatId, tz, country);
+    const currentTime = getCurrentTimeStr(tz);
+    await sendTelegram(`✅ Timezone set to ${tz}. All times will now show in ${country} time. (It's currently ${currentTime})`);
+  }
+}
+
+// --- Conversation helpers ---
+
 function getHistory(chatId) {
   return conversationHistory.get(chatId) || [];
 }
@@ -103,12 +392,16 @@ function saveHistory(chatId, userMessage, botResponse) {
   conversationHistory.set(chatId, history);
 }
 
-async function processMessage(userMessage, history = []) {
+// --- AI ---
+
+async function processMessage(userMessage, history = [], timezone = 'UTC') {
   const [events, calendars] = await Promise.all([getUpcomingEvents(), getAllCalendars()]);
 
   const eventsText = events.map(e => {
-    const start = e.start.dateTime || e.start.date;
-    return `- ${e.summary} op ${start}`;
+    const displayTime = e.start.dateTime
+      ? formatTimeInZone(e.start.dateTime, timezone)
+      : e.start.date;
+    return `- ${e.summary} op ${displayTime}`;
   }).join('\n');
 
   const calendarsText = calendars.map(c => `- id: "${c.id}", naam: "${c.name}"`).join('\n');
@@ -117,15 +410,15 @@ async function processMessage(userMessage, history = []) {
     ? '\nGespreksgeschiedenis:\n' + history.map(m => `${m.role === 'user' ? 'Jens' : 'Assistent'}: ${m.content}`).join('\n')
     : '';
 
-  const now = new Date().toISOString();
+  const nowDisplay = formatTimeInZone(new Date().toISOString(), timezone);
 
   const prompt = `Je bent een persoonlijke planning assistent voor Jens Vandenbroeke.
-Huidige tijd: ${now}
+Huidige tijd: ${nowDisplay} (${timezone})
 
 Beschikbare agenda's:
 ${calendarsText || 'Geen agenda\'s gevonden'}
 
-Jens zijn agenda voor de komende week:
+Jens zijn agenda voor de komende week (tijden in ${timezone}):
 ${eventsText || 'Geen afspraken gevonden'}
 ${historyText}
 
@@ -151,11 +444,20 @@ Regels:
   return JSON.parse(clean);
 }
 
+// --- Routes ---
+
 router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
   try {
     const update = req.body;
+
+    // Handle inline keyboard button presses
+    if (update.callback_query) {
+      await handleCallbackQuery(update);
+      return;
+    }
+
     if (!update.message) return;
 
     const chatId = String(update.message.chat.id);
@@ -167,10 +469,43 @@ router.post('/webhook', async (req, res) => {
       return;
     }
 
+    // Handle pending country name input (from "Other country" button)
+    if (pendingTimezoneInput.get(chatId)) {
+      pendingTimezoneInput.delete(chatId);
+      const result = lookupCountry(text);
+      if (!result) {
+        await sendTelegram(`❓ Couldn't find "${text}". Please type the country name in English or Dutch (e.g. "Germany", "Duitsland"):`);
+        pendingTimezoneInput.set(chatId, true);
+        return;
+      }
+      if (result.type === 'single') {
+        await saveUserTimezone(chatId, result.tz, result.country);
+        const currentTime = getCurrentTimeStr(result.tz);
+        await sendTelegram(`✅ Timezone set to ${result.tz}. All times will now show in ${result.country} time. (It's currently ${currentTime})`);
+      } else {
+        await sendMultiTzKeyboard(result.country, result.zones);
+      }
+      return;
+    }
+
+    // Fetch timezone preference (single DB call, reused for both tz check and processMessage)
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    const timezone = tzPref?.timezone || 'UTC';
+
+    // First message of session: send timezone check
+    if (!timezoneChecked.has(chatId)) {
+      await triggerTimezoneCheck(chatId, tzPref);
+    }
+
     await sendTelegram('⏳ Even nadenken...');
 
     const history = getHistory(chatId);
-    const response = await processMessage(text, history);
+    const response = await processMessage(text, history, timezone);
+
+    // Also prompt for timezone when showing agenda and none is set yet
+    if (response.action === 'show_agenda' && !tzPref?.timezone && timezoneChecked.has(chatId)) {
+      await triggerTimezoneCheck(chatId, null);
+    }
 
     let botReply;
     if (response.action === 'create_event') {

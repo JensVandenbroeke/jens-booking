@@ -20,6 +20,14 @@ async function initDb() {
     )
   `);
   await pool.query(`CREATE SEQUENCE IF NOT EXISTS booking_number_seq START 1001`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      chat_id TEXT PRIMARY KEY,
+      timezone TEXT,
+      timezone_country TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await groupSessions.initGroupTables();
 }
 async function getNextBookingNumber() {
@@ -69,5 +77,21 @@ async function markReminderSent(id,type) {
   const col=type==='24h'?'reminder_24h_sent':'reminder_1h_sent';
   await pool.query(`UPDATE bookings SET ${col}=TRUE WHERE id=$1`,[id]);
 }
+async function getUserTimezone(chatId) {
+  const res = await pool.query(
+    'SELECT timezone, timezone_country FROM user_preferences WHERE chat_id=$1',
+    [chatId]
+  );
+  return res.rows[0] || null;
+}
+async function saveUserTimezone(chatId, timezone, country) {
+  await pool.query(
+    `INSERT INTO user_preferences (chat_id, timezone, timezone_country, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (chat_id) DO UPDATE SET timezone=$2, timezone_country=$3, updated_at=NOW()`,
+    [chatId, timezone, country]
+  );
+}
 module.exports={initDb,getNextBookingNumber,saveBooking,updateBookingMeetLink,
-  cancelBooking,getBookings,findBookingById,getBookingsForReminders,markReminderSent};
+  cancelBooking,getBookings,findBookingById,getBookingsForReminders,markReminderSent,
+  getUserTimezone,saveUserTimezone};
