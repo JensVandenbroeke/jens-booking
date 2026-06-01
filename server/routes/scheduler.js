@@ -8,12 +8,29 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 
-// In-memory conversation history: chatId -> [{role, content}]
-const conversationHistory = new Map();
-// chatIds that have had a timezone check prompt sent this process lifetime
-const timezoneChecked = new Set();
-// chatIds waiting for a typed country name
-const pendingTimezoneInput = new Map();
+// In-memory state
+const conversationHistory = new Map();        // chatId -> [{role, content}]
+const timezoneChecked = new Set();            // chatIds with tz check sent this session
+const pendingTimezoneInput = new Map();       // chatId -> true when waiting for typed country
+const pendingBookings = new Map();            // chatId -> booking proposal object
+const pendingTitleEdit = new Map();           // chatId -> true when waiting for new title text
+const pendingDescriptionEdit = new Map();     // chatId -> true when waiting for new description text
+const pendingBookingTimezoneReset = new Set(); // chatIds that re-show booking after tz change
+
+// Prompt that instructs Claude to detect booking/event info and return structured JSON
+const BOOKING_DETECTION_PROMPT = `Analyze this content. Does it contain booking, travel, event or appointment information?
+
+Return ONLY a valid JSON object with no other text:
+{
+  "is_booking": true or false,
+  "event_type": "bus" or "flight" or "train" or "hotel" or "meeting" or "invitation" or "other",
+  "suggested_title": "emoji + concise title, e.g. 🚌 Bus Peniche → Nazaré",
+  "suggested_description": "relevant details such as ticket number, platform, operator, seat",
+  "date": "ISO 8601 datetime string or null",
+  "end_date": "ISO 8601 datetime string or null",
+  "timezone_hint": "timezone identifier found in the document or null",
+  "summary": "brief human-readable summary of what this content is"
+}`;
 
 // Countries with multiple timezones — show a second keyboard for zone selection
 const MULTI_TZ_COUNTRIES = {
@@ -41,8 +58,8 @@ const MULTI_TZ_COUNTRIES = {
     { label: '🌏 Vladivostok',   tz: 'Asia/Vladivostok' },
   ],
   'Brazil': [
-    { label: '🏙️ Brasília', tz: 'America/Sao_Paulo' },
-    { label: '🌿 Manaus',   tz: 'America/Manaus' },
+    { label: '🏙️ Brasília',  tz: 'America/Sao_Paulo' },
+    { label: '🌿 Manaus',    tz: 'America/Manaus' },
     { label: '🌅 Fortaleza', tz: 'America/Fortaleza' },
   ],
   'Mexico': [
@@ -61,7 +78,6 @@ const MULTI_TZ_COUNTRIES = {
   ],
 };
 
-// Aliases that map to a MULTI_TZ_COUNTRIES key
 const MULTI_TZ_ALIASES = {
   'usa': 'United States',
   'us': 'United States',
@@ -75,7 +91,6 @@ const MULTI_TZ_ALIASES = {
   'kazachstan': 'Kazakhstan',
 };
 
-// Single-timezone country lookup (lowercase key -> {tz, country})
 const COUNTRY_SINGLE_TZ = {
   'belgium': { tz: 'Europe/Brussels', country: 'Belgium' },
   'belgië': { tz: 'Europe/Brussels', country: 'Belgium' },
@@ -164,19 +179,13 @@ function getCurrentTimeStr(timezone) {
 // Returns {type:'single', tz, country} | {type:'multi', country, zones} | null
 function lookupCountry(input) {
   const normalized = input.trim().toLowerCase();
-
   const multiAlias = MULTI_TZ_ALIASES[normalized];
   if (multiAlias) return { type: 'multi', country: multiAlias, zones: MULTI_TZ_COUNTRIES[multiAlias] };
-
   for (const country of Object.keys(MULTI_TZ_COUNTRIES)) {
-    if (country.toLowerCase() === normalized) {
-      return { type: 'multi', country, zones: MULTI_TZ_COUNTRIES[country] };
-    }
+    if (country.toLowerCase() === normalized) return { type: 'multi', country, zones: MULTI_TZ_COUNTRIES[country] };
   }
-
   const single = COUNTRY_SINGLE_TZ[normalized];
   if (single) return { type: 'single', ...single };
-
   return null;
 }
 
@@ -254,15 +263,46 @@ async function createCalendarEvent(summary, startTime, endTime, description = ''
   });
 }
 
+// Search calendar events around a date hint and return the first one with a file_id in its description
+async function findFileInCalendar(dateHint) {
+  const targetDate = new Date(dateHint);
+  if (isNaN(targetDate)) return null;
+
+  const calendar = getCalendarClient();
+  const timeMin = new Date(targetDate.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const timeMax = new Date(targetDate.getTime() + 48 * 60 * 60 * 1000).toISOString();
+
+  let calendarIds;
+  try {
+    const allCalendars = await getAllCalendars();
+    calendarIds = allCalendars.map(c => c.id);
+  } catch {
+    calendarIds = ['primary', CALENDAR_ID].filter(Boolean);
+  }
+
+  const results = await Promise.all(
+    calendarIds.map(id => calendar.events.list({ calendarId: id, timeMin, timeMax, singleEvents: true }))
+  );
+
+  for (const res of results) {
+    for (const event of (res.data.items || [])) {
+      const match = event.description?.match(/📎 file_id: (\S+)/);
+      if (match) return { fileId: match[1], event };
+    }
+  }
+  return null;
+}
+
 // --- File download helper ---
 
+// Downloads any Telegram file and returns { base64, fileId }
 async function downloadTelegramFile(fileId) {
   const fileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
   const fileData = await fileRes.json();
   const filePath = fileData.result.file_path;
   const fileDownload = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`);
   const arrayBuffer = await fileDownload.arrayBuffer();
-  return Buffer.from(arrayBuffer).toString('base64');
+  return { base64: Buffer.from(arrayBuffer).toString('base64'), fileId };
 }
 
 // --- Telegram helpers ---
@@ -295,6 +335,14 @@ async function answerCallbackQuery(callbackQueryId) {
   });
 }
 
+async function sendTelegramDocument(fileId) {
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, document: fileId }),
+  });
+}
+
 async function sendMultiTzKeyboard(country, zones) {
   const rows = [];
   for (let i = 0; i < zones.length; i += 2) {
@@ -305,10 +353,63 @@ async function sendMultiTzKeyboard(country, zones) {
       }))
     );
   }
-  await sendInlineKeyboard(
-    `${country} has multiple timezones. What time is it where you are?`,
-    rows
-  );
+  await sendInlineKeyboard(`${country} has multiple timezones. What time is it where you are?`, rows);
+}
+
+// --- Booking proposal ---
+
+async function showBookingProposal(chatId, booking, timezone) {
+  const dateDisplay = booking.date ? formatTimeInZone(booking.date, timezone) : 'Date unknown';
+  const endDisplay = booking.end_date ? ` → ${formatTimeInZone(booking.end_date, timezone)}` : '';
+  const message =
+    `📄 I found the following in your document:\n\n` +
+    `${booking.title}\n` +
+    `📅 ${dateDisplay}${endDisplay}\n` +
+    `📝 ${booking.description}\n\n` +
+    `Shall I add this to your calendar?`;
+
+  await sendInlineKeyboard(message, [
+    [
+      { text: '✅ Plan it',          callback_data: 'book_confirm' },
+      { text: '✏️ Edit title',       callback_data: 'book_edit_title' },
+    ],
+    [
+      { text: '📝 Edit description', callback_data: 'book_edit_desc' },
+      { text: '🕐 Wrong timezone',   callback_data: 'book_timezone' },
+    ],
+    [
+      { text: '❌ Cancel',           callback_data: 'book_cancel' },
+    ],
+  ]);
+}
+
+// Parses the raw Claude response from a file analysis and either shows a booking proposal or sends the summary as text
+async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
+  let booking;
+  try {
+    const clean = rawResult.replace(/```json|```/g, '').trim();
+    booking = JSON.parse(clean);
+  } catch {
+    await sendTelegram(rawResult);
+    return;
+  }
+
+  if (!booking.is_booking) {
+    await sendTelegram(booking.summary || rawResult);
+    return;
+  }
+
+  const proposal = {
+    title: booking.suggested_title,
+    description: booking.suggested_description,
+    date: booking.date,
+    end_date: booking.end_date,
+    event_type: booking.event_type,
+    summary: booking.summary,
+    fileId,
+  };
+  pendingBookings.set(chatId, proposal);
+  await showBookingProposal(chatId, proposal, timezone);
 }
 
 // --- Timezone check flow ---
@@ -340,6 +441,16 @@ async function triggerTimezoneCheck(chatId, pref) {
   }
 }
 
+// After a timezone is confirmed or set, re-show any pending booking proposal with updated times
+async function maybeReshowBookingAfterTzChange(chatId) {
+  if (!pendingBookingTimezoneReset.has(chatId)) return;
+  pendingBookingTimezoneReset.delete(chatId);
+  const booking = pendingBookings.get(chatId);
+  if (!booking) return;
+  const tzPref = await getUserTimezone(chatId).catch(() => null);
+  await showBookingProposal(chatId, booking, tzPref?.timezone || 'UTC');
+}
+
 async function handleCallbackQuery(update) {
   const query = update.callback_query;
   const chatId = String(query.message.chat.id);
@@ -347,10 +458,13 @@ async function handleCallbackQuery(update) {
 
   await answerCallbackQuery(query.id);
 
+  // --- Timezone callbacks ---
+
   if (data === 'tz_confirm') {
     const pref = await getUserTimezone(chatId).catch(() => null);
     const country = pref?.timezone_country || 'your timezone';
     await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    await maybeReshowBookingAfterTzChange(chatId);
     return;
   }
 
@@ -374,6 +488,7 @@ async function handleCallbackQuery(update) {
     if (result && result.type === 'single') {
       await saveUserTimezone(chatId, result.tz, result.country);
       await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+      await maybeReshowBookingAfterTzChange(chatId);
     }
     return;
   }
@@ -385,6 +500,50 @@ async function handleCallbackQuery(update) {
     const country = parts[1];
     await saveUserTimezone(chatId, tz, country);
     await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    await maybeReshowBookingAfterTzChange(chatId);
+    return;
+  }
+
+  // --- Booking callbacks ---
+
+  if (data === 'book_confirm') {
+    const booking = pendingBookings.get(chatId);
+    if (!booking) { await sendTelegram('❌ No pending booking found.'); return; }
+    if (!booking.date) { await sendTelegram('❌ Cannot create event: no date was found in the document.'); return; }
+    const endTime = booking.end_date || new Date(new Date(booking.date).getTime() + 60 * 60 * 1000).toISOString();
+    const description = (booking.description || '') + `\n\n📎 file_id: ${booking.fileId}`;
+    await createCalendarEvent(booking.title, booking.date, endTime, description, CALENDAR_ID);
+    pendingBookings.delete(chatId);
+    await sendTelegram(`✅ ${booking.title} added to your calendar!`);
+    return;
+  }
+
+  if (data === 'book_edit_title') {
+    pendingTitleEdit.set(chatId, true);
+    await sendTelegram('What should the title be?');
+    return;
+  }
+
+  if (data === 'book_edit_desc') {
+    pendingDescriptionEdit.set(chatId, true);
+    await sendTelegram('What should the description be?');
+    return;
+  }
+
+  if (data === 'book_timezone') {
+    pendingBookingTimezoneReset.add(chatId);
+    await sendInlineKeyboard('Select your timezone:', [[
+      { text: '🇧🇪 Belgium',       callback_data: 'tz_pick|Belgium' },
+      { text: '🇵🇹 Portugal',      callback_data: 'tz_pick|Portugal' },
+      { text: '✏️ Other country', callback_data: 'tz_pick|other' },
+    ]]);
+    return;
+  }
+
+  if (data === 'book_cancel') {
+    pendingBookings.delete(chatId);
+    await sendTelegram('❌ Cancelled.');
+    return;
   }
 }
 
@@ -409,9 +568,7 @@ async function processMessage(userMessage, history = [], timezone = 'UTC') {
   const [events, calendars] = await Promise.all([getUpcomingEvents(), getAllCalendars()]);
 
   const eventsText = events.map(e => {
-    const displayTime = e.start.dateTime
-      ? formatTimeInZone(e.start.dateTime, timezone)
-      : e.start.date;
+    const displayTime = e.start.dateTime ? formatTimeInZone(e.start.dateTime, timezone) : e.start.date;
     return `- ${e.summary} op ${displayTime}`;
   }).join('\n');
 
@@ -440,7 +597,9 @@ Je taken:
    {"action": "create_event", "summary": "naam", "start": "ISO datetime", "end": "ISO datetime", "description": "optionele beschrijving", "calendar_id": "id van de juiste agenda", "message": "bevestiging voor Jens"}
 2. Als Jens zijn agenda wil zien, geef dan:
    {"action": "show_agenda", "message": "overzicht van de agenda"}
-3. Voor andere vragen:
+3. Als Jens een document, ticket of bestand wil terugvinden aan de hand van een datum:
+   {"action": "retrieve_file", "date_hint": "YYYY-MM-DD", "message": "zoeken..."}
+4. Voor andere vragen:
    {"action": "reply", "message": "jouw antwoord"}
 
 Regels:
@@ -495,26 +654,52 @@ router.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Handle photo messages — always via Claude vision regardless of AI_PROVIDER
+    // Fetch timezone early — needed for photo/PDF proposals and text processing
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    const timezone = tzPref?.timezone || 'UTC';
+
+    // Handle photo messages — booking detection via Claude vision (always uses ANTHROPIC_API_KEY directly)
     if (photos) {
       await sendTelegram('⏳ Analysing image...');
       const highestRes = photos[photos.length - 1];
-      const base64data = await downloadTelegramFile(highestRes.file_id);
+      const { base64, fileId } = await downloadTelegramFile(highestRes.file_id);
       const caption = update.message.caption || '';
-      const reply = await askClaudeVision(base64data, caption);
-      await sendTelegram(reply);
-      saveHistory(chatId, caption || '[image]', reply);
+      const prompt = caption ? `${caption}\n\n${BOOKING_DETECTION_PROMPT}` : BOOKING_DETECTION_PROMPT;
+      const rawResult = await askClaudeVision(base64, prompt);
+      await handleFileAnalysis(chatId, rawResult, fileId, timezone);
       return;
     }
 
-    // Handle PDF documents — always via Claude regardless of AI_PROVIDER
+    // Handle PDF documents — booking detection via Claude (always uses ANTHROPIC_API_KEY directly)
     if (isPdf) {
       await sendTelegram('⏳ Reading document...');
-      const base64data = await downloadTelegramFile(doc.file_id);
+      const { base64, fileId } = await downloadTelegramFile(doc.file_id);
       const caption = update.message.caption || '';
-      const reply = await askClaudePdf(base64data, caption);
-      await sendTelegram(reply);
-      saveHistory(chatId, caption || '[document]', reply);
+      const prompt = caption ? `${caption}\n\n${BOOKING_DETECTION_PROMPT}` : BOOKING_DETECTION_PROMPT;
+      const rawResult = await askClaudePdf(base64, prompt);
+      await handleFileAnalysis(chatId, rawResult, fileId, timezone);
+      return;
+    }
+
+    // Handle pending title edit for booking proposal
+    if (text && pendingTitleEdit.get(chatId)) {
+      pendingTitleEdit.delete(chatId);
+      const booking = pendingBookings.get(chatId);
+      if (booking) {
+        booking.title = text;
+        await showBookingProposal(chatId, booking, timezone);
+      }
+      return;
+    }
+
+    // Handle pending description edit for booking proposal
+    if (text && pendingDescriptionEdit.get(chatId)) {
+      pendingDescriptionEdit.delete(chatId);
+      const booking = pendingBookings.get(chatId);
+      if (booking) {
+        booking.description = text;
+        await showBookingProposal(chatId, booking, timezone);
+      }
       return;
     }
 
@@ -530,15 +715,12 @@ router.post('/webhook', async (req, res) => {
       if (result.type === 'single') {
         await saveUserTimezone(chatId, result.tz, result.country);
         await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+        await maybeReshowBookingAfterTzChange(chatId);
       } else {
         await sendMultiTzKeyboard(result.country, result.zones);
       }
       return;
     }
-
-    // Fetch timezone preference (single DB call, reused for both tz check and processMessage)
-    const tzPref = await getUserTimezone(chatId).catch(() => null);
-    const timezone = tzPref?.timezone || 'UTC';
 
     // First message of session: send timezone check
     if (!timezoneChecked.has(chatId)) {
@@ -555,6 +737,15 @@ router.post('/webhook', async (req, res) => {
       const calendarId = response.calendar_id || CALENDAR_ID;
       await createCalendarEvent(response.summary, response.start, response.end, response.description, calendarId);
       botReply = `✅ ${response.message}`;
+    } else if (response.action === 'retrieve_file') {
+      const found = await findFileInCalendar(response.date_hint);
+      if (found) {
+        await sendTelegram(`📎 Found: ${found.event.summary}`);
+        await sendTelegramDocument(found.fileId);
+        botReply = `📎 ${found.event.summary} sent!`;
+      } else {
+        botReply = `❓ No document found around ${response.date_hint}.`;
+      }
     } else {
       botReply = response.message;
     }

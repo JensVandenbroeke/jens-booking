@@ -58,7 +58,7 @@ async function askCodex(prompt) {
   return data.output[0].content[0].text.trim();
 }
 
-async function askClaudeVision(base64data, caption) {
+async function askClaudeVision(base64data, textPrompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -67,13 +67,13 @@ async function askClaudeVision(base64data, caption) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2000,
+      model: 'claude-opus-4-6',
+      max_tokens: 1000,
       messages: [{
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64data } },
-          { type: 'text', text: caption || 'What do you see in this image? How can I help?' },
+          { type: 'text', text: textPrompt || 'What do you see in this image? How can I help?' },
         ],
       }],
     }),
@@ -83,7 +83,7 @@ async function askClaudeVision(base64data, caption) {
   return data.content[0].text.trim();
 }
 
-async function askClaudePdf(base64data, caption) {
+async function askClaudePdf(base64data, textPrompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -92,13 +92,13 @@ async function askClaudePdf(base64data, caption) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2000,
+      model: 'claude-opus-4-6',
+      max_tokens: 1000,
       messages: [{
         role: 'user',
         content: [
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64data } },
-          { type: 'text', text: caption || 'Please read this document and summarize it. How can I help?' },
+          { type: 'text', text: textPrompt || 'Please read this document and summarize it. How can I help?' },
         ],
       }],
     }),
