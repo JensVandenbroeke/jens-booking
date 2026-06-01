@@ -28,6 +28,14 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS learned_airports (
+      code TEXT PRIMARY KEY,
+      timezone TEXT NOT NULL,
+      added_by_chat_id TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await groupSessions.initGroupTables();
 }
 async function getNextBookingNumber() {
@@ -92,6 +100,21 @@ async function saveUserTimezone(chatId, timezone, country) {
     [chatId, timezone, country]
   );
 }
+async function getLearnedAirport(code) {
+  const res = await pool.query(
+    'SELECT timezone FROM learned_airports WHERE code=$1',
+    [code.toUpperCase()]
+  );
+  return res.rows[0]?.timezone || null;
+}
+async function saveLearnedAirport(code, timezone, chatId) {
+  await pool.query(
+    `INSERT INTO learned_airports (code, timezone, added_by_chat_id)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (code) DO UPDATE SET timezone=$2, added_by_chat_id=$3`,
+    [code.toUpperCase(), timezone, chatId]
+  );
+}
 module.exports={initDb,getNextBookingNumber,saveBooking,updateBookingMeetLink,
   cancelBooking,getBookings,findBookingById,getBookingsForReminders,markReminderSent,
-  getUserTimezone,saveUserTimezone};
+  getUserTimezone,saveUserTimezone,getLearnedAirport,saveLearnedAirport};

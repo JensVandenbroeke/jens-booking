@@ -1,7 +1,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { askAI, askClaudeVision, askClaudePdf } = require('../lib/ai');
-const { getUserTimezone, saveUserTimezone } = require('../db');
+const { getUserTimezone, saveUserTimezone, getLearnedAirport, saveLearnedAirport } = require('../db');
 
 const router = express.Router();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -19,6 +19,7 @@ const pendingDescriptionEdit = new Map();       // chatId -> true when waiting f
 const pendingBookingTimezoneReset = new Set();  // chatIds that re-show booking proposal after tz change
 const pendingBookingAwaitingCalendar = new Set(); // chatIds that go to calendar picker after tz change
 const pendingCalendarOptions = new Map();       // chatId -> [{id, name}] for current calendar picker
+const pendingAirportTimezone = new Map();       // chatId -> { airportCode, cityName, awaitingInput, proposal, depCode, arrCode, depCityHint, arrCityHint, resolvedDep, resolvedArr }
 
 const MAX_MAP_SIZE = 100;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -378,6 +379,79 @@ function lookupAirport(code) {
   return AIRPORT_TIMEZONES[code.trim().toUpperCase()] || null;
 }
 
+// Checks static map first, then learned_airports table
+async function resolveAirport(code, cityHint) {
+  if (!code) return null;
+  const known = lookupAirport(code);
+  if (known) return known;
+  const learnedTz = await getLearnedAirport(code).catch(() => null);
+  if (learnedTz) return { tz: learnedTz, city: cityHint || code.toUpperCase() };
+  return null;
+}
+
+async function askAboutUnknownAirport(chatId, state) {
+  const depCity = state.resolvedDep?.city || state.depCityHint || state.depCode || '?';
+  const arrCity = state.resolvedArr?.city || state.arrCityHint || state.arrCode || '?';
+  const msg =
+    `✈️ ${depCity} → ${arrCity} gevonden, maar ik ken de tijdzone van ${state.airportCode} niet.\n\n` +
+    `In welke tijdzone ligt ${state.cityName}?`;
+  await sendInlineKeyboard(msg, [[
+    { text: '🕐 Zelfde als mijn tijdzone', callback_data: 'airport_tz_same'   },
+    { text: '✏️ Ik typ het zelf',          callback_data: 'airport_tz_manual' },
+  ]]);
+}
+
+async function continueFlightAfterAirportResolved(chatId, airportCode, tz, state) {
+  await saveLearnedAirport(airportCode, tz, chatId);
+
+  const resolved = { tz, city: state.cityName };
+  if (state.depCode?.toUpperCase() === airportCode.toUpperCase()) state.resolvedDep = resolved;
+  if (state.arrCode?.toUpperCase() === airportCode.toUpperCase()) state.resolvedArr = resolved;
+
+  // If there is still an unknown airport, ask about it next
+  if (!state.resolvedDep) {
+    state.airportCode = state.depCode;
+    state.cityName    = state.depCityHint || state.depCode;
+    state.awaitingInput = false;
+    cappedSet(pendingAirportTimezone, chatId, state);
+    await askAboutUnknownAirport(chatId, state);
+    return;
+  }
+  if (!state.resolvedArr) {
+    state.airportCode = state.arrCode;
+    state.cityName    = state.arrCityHint || state.arrCode;
+    state.awaitingInput = false;
+    cappedSet(pendingAirportTimezone, chatId, state);
+    await askAboutUnknownAirport(chatId, state);
+    return;
+  }
+
+  // Both airports resolved — build and show the flight proposal
+  pendingAirportTimezone.delete(chatId);
+
+  const dep = state.resolvedDep;
+  const arr = state.resolvedArr;
+  const depCity = dep.city;
+  const arrCity = arr.city;
+  const proposal = state.proposal;
+
+  proposal.isFlight      = true;
+  proposal.departureTz   = dep.tz;
+  proposal.arrivalTz     = arr.tz;
+  proposal.departureCity = depCity;
+  proposal.arrivalCity   = arrCity;
+  proposal.title         = `✈️ ${depCity} → ${arrCity}`;
+
+  cappedSet(pendingBookings, chatId, proposal);
+
+  if (dep.tz !== arr.tz) {
+    await showFlightProposal(chatId, proposal);
+  } else {
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    await showBookingProposal(chatId, proposal, tzPref?.timezone || 'UTC');
+  }
+}
+
 // --- Timezone helpers ---
 
 function formatTimeInZone(isoString, timezone) {
@@ -700,8 +774,10 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
   };
 
   if (booking.is_flight) {
-    const dep = lookupAirport(booking.departure_airport_code);
-    const arr = lookupAirport(booking.arrival_airport_code);
+    const depCityHint = booking.departure_airport_city || booking.departure_airport_code || '?';
+    const arrCityHint = booking.arrival_airport_city  || booking.arrival_airport_code  || '?';
+    const dep = await resolveAirport(booking.departure_airport_code, depCityHint);
+    const arr = await resolveAirport(booking.arrival_airport_code,   arrCityHint);
 
     if (dep && arr) {
       proposal.isFlight      = true;
@@ -720,11 +796,24 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
       }
       // Same timezone — fall through to normal proposal below
     } else {
-      // One or both airports not in map — warn and fall through
-      const unknown = [booking.departure_airport_code, booking.arrival_airport_code]
-        .filter(a => a && !lookupAirport(a))
-        .join(', ');
-      if (unknown) await sendTelegram(`⚠️ Luchthaven tijdzone niet herkend voor: ${unknown}. Controleer de tijden.`);
+      // One or both airports unknown — start interactive timezone resolution
+      const firstUnknownCode = !dep ? booking.departure_airport_code : booking.arrival_airport_code;
+      const firstUnknownCity = !dep ? depCityHint : arrCityHint;
+      const state = {
+        airportCode:    firstUnknownCode,
+        cityName:       firstUnknownCity,
+        awaitingInput:  false,
+        proposal,
+        depCode:        booking.departure_airport_code,
+        arrCode:        booking.arrival_airport_code,
+        depCityHint,
+        arrCityHint,
+        resolvedDep:    dep,
+        resolvedArr:    arr,
+      };
+      cappedSet(pendingAirportTimezone, chatId, state);
+      await askAboutUnknownAirport(chatId, state);
+      return;
     }
   }
 
@@ -903,7 +992,29 @@ async function handleCallbackQuery(update) {
 
   if (data === 'book_cancel') {
     pendingBookings.delete(chatId);
+    pendingAirportTimezone.delete(chatId);
     await sendTelegram('❌ Cancelled.');
+    return;
+  }
+
+  // --- Airport timezone resolution callbacks ---
+
+  if (data === 'airport_tz_same') {
+    const state = pendingAirportTimezone.get(chatId);
+    if (!state) { await sendTelegram('❌ Geen vlucht in behandeling.'); return; }
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    const tz = tzPref?.timezone || 'UTC';
+    await sendTelegram(`✅ Onthouden! ${state.airportCode} = ${tz}. Dit gebruik ik voortaan.`);
+    await continueFlightAfterAirportResolved(chatId, state.airportCode, tz, state);
+    return;
+  }
+
+  if (data === 'airport_tz_manual') {
+    const state = pendingAirportTimezone.get(chatId);
+    if (!state) { await sendTelegram('❌ Geen vlucht in behandeling.'); return; }
+    state.awaitingInput = true;
+    cappedSet(pendingAirportTimezone, chatId, state);
+    await sendTelegram(`Typ de tijdzone voor ${state.airportCode} (bijv. Asia/Tokyo, America/New_York):`);
     return;
   }
 }
@@ -1082,6 +1193,21 @@ router.post('/webhook', async (req, res) => {
       const prompt = caption ? `${caption}\n\n${BOOKING_DETECTION_PROMPT}` : BOOKING_DETECTION_PROMPT;
       const rawResult = await askClaudePdf(base64, prompt);
       await handleFileAnalysis(chatId, rawResult, fileId, timezone);
+      return;
+    }
+
+    // Handle pending airport timezone input
+    const airportTzState = pendingAirportTimezone.get(chatId);
+    if (text && airportTzState?.awaitingInput) {
+      const tz = text.trim();
+      let valid = false;
+      try { Intl.DateTimeFormat(undefined, { timeZone: tz }); valid = true; } catch {}
+      if (!valid) {
+        await sendTelegram(`❌ "${tz}" is geen geldige tijdzone. Probeer bijv. Asia/Tokyo of America/New_York:`);
+        return;
+      }
+      await sendTelegram(`✅ Onthouden! ${airportTzState.airportCode} = ${tz}. Dit gebruik ik voortaan.`);
+      await continueFlightAfterAirportResolved(chatId, airportTzState.airportCode, tz, airportTzState);
       return;
     }
 
