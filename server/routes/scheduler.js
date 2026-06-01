@@ -40,6 +40,8 @@ function cappedAdd(set, value) {
 // Prompt that instructs Claude to detect booking/event info and return structured JSON
 const BOOKING_DETECTION_PROMPT = `Analyze this content. Does it contain booking, travel, event or appointment information?
 
+CRITICAL: Extract times EXACTLY as written in the document. Do NOT convert or adjust times. If the document says 13:15, output 13:15. Never add or subtract hours. The timezone field should reflect what timezone the document appears to be in, but the time value must remain unchanged from the source document.
+
 Return ONLY a valid JSON object with no other text:
 {
   "is_booking": true or false,
