@@ -355,6 +355,19 @@ async function sendMultiTzKeyboard(country, zones) {
   await sendInlineKeyboard(`${country} has multiple timezones. What time is it where you are?`, rows);
 }
 
+// Converts a booking datetime string (extracted from a document) into a naive local ISO string
+// so Google Calendar interprets it as local time in userTimezone, with no additional shift.
+function toLocalBookingIso(dateStr, userTimezone) {
+  const [date, rawTime = '00:00'] = dateStr.split('T');
+  const time = rawTime.replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
+  const dt = new Date(`${date}T${time}`);
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: userTimezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).format(dt).replace(' ', 'T') + ':00';
+}
+
 // --- Calendar picker for booking confirmation ---
 
 async function showCalendarKeyboard(chatId) {
@@ -552,10 +565,13 @@ async function handleCallbackQuery(update) {
     if (!booking) { await sendTelegram('❌ No pending booking found.'); return; }
     const { id: calendarId, name: calendarName } = options[index];
     const tzPref = await getUserTimezone(chatId).catch(() => null);
-    const timezone = tzPref?.timezone || null;
-    const endTime = booking.end_date || new Date(new Date(booking.date).getTime() + 60 * 60 * 1000).toISOString();
+    const timezone = tzPref?.timezone || 'UTC';
+    const startIso = toLocalBookingIso(booking.date, timezone);
+    const endIso = booking.end_date
+      ? toLocalBookingIso(booking.end_date, timezone)
+      : (() => { const d = new Date(startIso); d.setHours(d.getHours() + 1); return toLocalBookingIso(d.toISOString(), timezone); })();
     const description = (booking.description || '') + `\n\n📎 file_id: ${booking.fileId}`;
-    await createCalendarEvent(booking.title, booking.date, endTime, description, calendarId, timezone);
+    await createCalendarEvent(booking.title, startIso, endIso, description, calendarId, timezone);
     pendingBookings.delete(chatId);
     pendingCalendarOptions.delete(chatId);
     await sendTelegram(`✅ ${booking.title} added to ${calendarName}!`);
