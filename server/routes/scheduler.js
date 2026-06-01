@@ -337,7 +337,9 @@ async function handleCallbackQuery(update) {
   await answerCallbackQuery(query.id);
 
   if (data === 'tz_confirm') {
-    // User confirmed — nothing to change
+    const pref = await getUserTimezone(chatId).catch(() => null);
+    const country = pref?.timezone_country || 'your timezone';
+    await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
     return;
   }
 
@@ -360,8 +362,7 @@ async function handleCallbackQuery(update) {
     const result = lookupCountry(choice.toLowerCase());
     if (result && result.type === 'single') {
       await saveUserTimezone(chatId, result.tz, result.country);
-      const currentTime = getCurrentTimeStr(result.tz);
-      await sendTelegram(`✅ Timezone set to ${result.tz}. All times will now show in ${result.country} time. (It's currently ${currentTime})`);
+      await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
     }
     return;
   }
@@ -372,8 +373,7 @@ async function handleCallbackQuery(update) {
     const tz = parts[0];
     const country = parts[1];
     await saveUserTimezone(chatId, tz, country);
-    const currentTime = getCurrentTimeStr(tz);
-    await sendTelegram(`✅ Timezone set to ${tz}. All times will now show in ${country} time. (It's currently ${currentTime})`);
+    await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
   }
 }
 
@@ -491,8 +491,7 @@ router.post('/webhook', async (req, res) => {
       }
       if (result.type === 'single') {
         await saveUserTimezone(chatId, result.tz, result.country);
-        const currentTime = getCurrentTimeStr(result.tz);
-        await sendTelegram(`✅ Timezone set to ${result.tz}. All times will now show in ${result.country} time. (It's currently ${currentTime})`);
+        await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
       } else {
         await sendMultiTzKeyboard(result.country, result.zones);
       }
@@ -512,11 +511,6 @@ router.post('/webhook', async (req, res) => {
 
     const history = getHistory(chatId);
     const response = await processMessage(text, history, timezone);
-
-    // Also prompt for timezone when showing agenda and none is set yet
-    if (response.action === 'show_agenda' && !tzPref?.timezone && timezoneChecked.has(chatId)) {
-      await triggerTimezoneCheck(chatId, null);
-    }
 
     let botReply;
     if (response.action === 'create_event') {
