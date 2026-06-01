@@ -83,4 +83,29 @@ async function askClaudeVision(base64data, caption) {
   return data.content[0].text.trim();
 }
 
-module.exports = { askAI, askClaudeVision };
+async function askClaudePdf(base64data, caption) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64data } },
+          { type: 'text', text: caption || 'Please read this document and summarize it. How can I help?' },
+        ],
+      }],
+    }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error('Claude PDF error: ' + data.error.message);
+  return data.content[0].text.trim();
+}
+
+module.exports = { askAI, askClaudeVision, askClaudePdf };

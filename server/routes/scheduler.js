@@ -1,6 +1,6 @@
 const express = require('express');
 const { google } = require('googleapis');
-const { askAI, askClaudeVision } = require('../lib/ai');
+const { askAI, askClaudeVision, askClaudePdf } = require('../lib/ai');
 const { getUserTimezone, saveUserTimezone } = require('../db');
 
 const router = express.Router();
@@ -254,14 +254,14 @@ async function createCalendarEvent(summary, startTime, endTime, description = ''
   });
 }
 
-// --- Photo helpers ---
+// --- File download helper ---
 
-async function downloadTelegramPhoto(fileId) {
+async function downloadTelegramFile(fileId) {
   const fileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
   const fileData = await fileRes.json();
   const filePath = fileData.result.file_path;
-  const photoRes = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`);
-  const arrayBuffer = await photoRes.arrayBuffer();
+  const fileDownload = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`);
+  const arrayBuffer = await fileDownload.arrayBuffer();
   return Buffer.from(arrayBuffer).toString('base64');
 }
 
@@ -487,26 +487,34 @@ router.post('/webhook', async (req, res) => {
 
     const text = update.message.text;
     const photos = update.message.photo;
+    const doc = update.message.document;
+    const isPdf = doc?.mime_type === 'application/pdf';
 
-    if (!text && !photos) {
-      await sendTelegram('Ik begrijp momenteel alleen tekstberichten en afbeeldingen. Voiceberichten komen binnenkort!');
+    if (!text && !photos && !isPdf) {
+      await sendTelegram('Ik begrijp momenteel tekstberichten, afbeeldingen en PDF-bestanden. Voiceberichten komen binnenkort!');
       return;
     }
 
-    // Handle photo messages (Claude only)
+    // Handle photo messages — always via Claude vision regardless of AI_PROVIDER
     if (photos) {
-      const aiProvider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
-      if (aiProvider !== 'claude') {
-        await sendTelegram('📷 Photo support is only available when using Claude as the AI provider.');
-        return;
-      }
       await sendTelegram('⏳ Analysing image...');
       const highestRes = photos[photos.length - 1];
-      const base64data = await downloadTelegramPhoto(highestRes.file_id);
+      const base64data = await downloadTelegramFile(highestRes.file_id);
       const caption = update.message.caption || '';
       const reply = await askClaudeVision(base64data, caption);
       await sendTelegram(reply);
       saveHistory(chatId, caption || '[image]', reply);
+      return;
+    }
+
+    // Handle PDF documents — always via Claude regardless of AI_PROVIDER
+    if (isPdf) {
+      await sendTelegram('⏳ Reading document...');
+      const base64data = await downloadTelegramFile(doc.file_id);
+      const caption = update.message.caption || '';
+      const reply = await askClaudePdf(base64data, caption);
+      await sendTelegram(reply);
+      saveHistory(chatId, caption || '[document]', reply);
       return;
     }
 
