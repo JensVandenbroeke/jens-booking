@@ -19,6 +19,24 @@ const pendingBookingTimezoneReset = new Set();  // chatIds that re-show booking 
 const pendingBookingAwaitingCalendar = new Set(); // chatIds that go to calendar picker after tz change
 const pendingCalendarOptions = new Map();       // chatId -> [{id, name}] for current calendar picker
 
+const MAX_MAP_SIZE = 100;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+// Evict the oldest entry when a Map/Set reaches MAX_MAP_SIZE to prevent unbounded growth
+function cappedSet(map, key, value) {
+  if (!map.has(key) && map.size >= MAX_MAP_SIZE) {
+    map.delete(map.keys().next().value);
+  }
+  map.set(key, value);
+}
+
+function cappedAdd(set, value) {
+  if (!set.has(value) && set.size >= MAX_MAP_SIZE) {
+    set.delete(set.values().next().value);
+  }
+  set.add(value);
+}
+
 // Prompt that instructs Claude to detect booking/event info and return structured JSON
 const BOOKING_DETECTION_PROMPT = `Analyze this content. Does it contain booking, travel, event or appointment information?
 
@@ -298,9 +316,16 @@ async function findFileInCalendar(dateHint) {
 async function downloadTelegramFile(fileId) {
   const fileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
   const fileData = await fileRes.json();
+  const fileSize = fileData.result?.file_size;
+  if (fileSize && fileSize > MAX_FILE_SIZE) {
+    throw new Error(`File too large (${Math.round(fileSize / 1024 / 1024)}MB). Maximum allowed size is 10MB.`);
+  }
   const filePath = fileData.result.file_path;
   const fileDownload = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`);
   const arrayBuffer = await fileDownload.arrayBuffer();
+  if (arrayBuffer.byteLength > MAX_FILE_SIZE) {
+    throw new Error(`File too large (${Math.round(arrayBuffer.byteLength / 1024 / 1024)}MB). Maximum allowed size is 10MB.`);
+  }
   return { base64: Buffer.from(arrayBuffer).toString('base64'), fileId };
 }
 
@@ -372,7 +397,7 @@ async function showCalendarKeyboard(chatId) {
     await sendTelegram('❌ Could not load calendars: ' + err.message);
     return;
   }
-  pendingCalendarOptions.set(chatId, calendars);
+  cappedSet(pendingCalendarOptions, chatId, calendars);
   // Use index-based callback to stay well under Telegram's 64-byte callback_data limit
   const rows = calendars.map((cal, i) => [{ text: cal.name, callback_data: `book_calendar|${i}` }]);
   await sendInlineKeyboard('Which calendar should I add this to?', rows);
@@ -430,14 +455,14 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
     summary: booking.summary,
     fileId,
   };
-  pendingBookings.set(chatId, proposal);
+  cappedSet(pendingBookings, chatId, proposal);
   await showBookingProposal(chatId, proposal, timezone);
 }
 
 // --- Timezone check flow ---
 
 async function triggerTimezoneCheck(chatId, pref) {
-  timezoneChecked.add(chatId);
+  cappedAdd(timezoneChecked, chatId);
   try {
     if (pref?.timezone) {
       const currentTime = getCurrentTimeStr(pref.timezone);
@@ -509,7 +534,7 @@ async function handleCallbackQuery(update) {
   if (data.startsWith('tz_pick|')) {
     const choice = data.slice(8);
     if (choice === 'other') {
-      pendingTimezoneInput.set(chatId, true);
+      cappedSet(pendingTimezoneInput, chatId, true);
       await sendTelegram('Type your country name (in English or Dutch):');
       return;
     }
@@ -542,8 +567,8 @@ async function handleCallbackQuery(update) {
     const tzPref = await getUserTimezone(chatId).catch(() => null);
     if (!tzPref?.timezone) {
       // No timezone yet — ask for it first, then proceed to calendar selection
-      pendingBookingTimezoneReset.add(chatId);
-      pendingBookingAwaitingCalendar.add(chatId);
+      cappedAdd(pendingBookingTimezoneReset, chatId);
+      cappedAdd(pendingBookingAwaitingCalendar, chatId);
       await triggerTimezoneCheck(chatId, null);
     } else {
       await showCalendarKeyboard(chatId);
@@ -580,19 +605,19 @@ async function handleCallbackQuery(update) {
   }
 
   if (data === 'book_edit_title') {
-    pendingTitleEdit.set(chatId, true);
+    cappedSet(pendingTitleEdit, chatId, true);
     await sendTelegram('What should the title be?');
     return;
   }
 
   if (data === 'book_edit_desc') {
-    pendingDescriptionEdit.set(chatId, true);
+    cappedSet(pendingDescriptionEdit, chatId, true);
     await sendTelegram('What should the description be?');
     return;
   }
 
   if (data === 'book_timezone') {
-    pendingBookingTimezoneReset.add(chatId);
+    cappedAdd(pendingBookingTimezoneReset, chatId);
     await sendInlineKeyboard('Select your timezone:', [[
       { text: '🇧🇪 Belgium',       callback_data: 'tz_pick|Belgium' },
       { text: '🇵🇹 Portugal',      callback_data: 'tz_pick|Portugal' },
@@ -620,7 +645,7 @@ function saveHistory(chatId, userMessage, botResponse) {
   history.push({ role: 'assistant', content: botResponse });
   // Keep only last 10 messages (5 exchanges)
   if (history.length > 10) history.splice(0, history.length - 10);
-  conversationHistory.set(chatId, history);
+  cappedSet(conversationHistory, chatId, history);
 }
 
 // --- AI ---
@@ -770,7 +795,7 @@ router.post('/webhook', async (req, res) => {
       const result = lookupCountry(text);
       if (!result) {
         await sendTelegram(`❓ Couldn't find "${text}". Please type the country name in English or Dutch (e.g. "Germany", "Duitsland"):`);
-        pendingTimezoneInput.set(chatId, true);
+        cappedSet(pendingTimezoneInput, chatId, true);
         return;
       }
       if (result.type === 'single') {
