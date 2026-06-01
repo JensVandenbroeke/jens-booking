@@ -42,6 +42,9 @@ const BOOKING_DETECTION_PROMPT = `Analyze this content. Does it contain booking,
 
 CRITICAL: Extract times EXACTLY as written in the document. Do NOT convert or adjust times. If the document says 13:15, output 13:15. Never add or subtract hours. The timezone field should reflect what timezone the document appears to be in, but the time value must remain unchanged from the source document.
 
+Rules:
+- IMPORTANT: Copy times EXACTLY as they appear in the document. If you see 13:15, output 13:15. Never modify times.
+
 Return ONLY a valid JSON object with no other text:
 {
   "is_booking": true or false,
