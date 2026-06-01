@@ -44,16 +44,22 @@ CRITICAL: Extract times EXACTLY as written in the document. Do NOT convert or ad
 
 Rules:
 - IMPORTANT: Copy times EXACTLY as they appear in the document. If you see 13:15, output 13:15. Never modify times.
+- For flights: set "is_flight" to true, extract "departure_airport" (IATA code if visible, otherwise city name), "arrival_airport" (same), "departure_time" (exact HH:MM from document), "arrival_time" (exact HH:MM from document). Set "date" to the full departure datetime (YYYY-MM-DDTHH:MM:00) and "end_date" to the full arrival datetime.
 
 Return ONLY a valid JSON object with no other text:
 {
   "is_booking": true or false,
+  "is_flight": true or false,
   "event_type": "bus" or "flight" or "train" or "hotel" or "meeting" or "invitation" or "other",
-  "suggested_title": "emoji + concise title, e.g. 🚌 Bus Peniche → Nazaré",
-  "suggested_description": "relevant details such as ticket number, platform, operator, seat",
+  "suggested_title": "emoji + concise title, e.g. ✈️ Brussels → Tokyo",
+  "suggested_description": "relevant details such as ticket number, flight number, seat, operator",
   "date": "ISO 8601 datetime string or null",
   "end_date": "ISO 8601 datetime string or null",
   "timezone_hint": "timezone identifier found in the document or null",
+  "departure_airport": "IATA code or city name or null",
+  "arrival_airport": "IATA code or city name or null",
+  "departure_time": "HH:MM as written in document or null",
+  "arrival_time": "HH:MM as written in document or null",
   "summary": "brief human-readable summary of what this content is"
 }`;
 
@@ -172,6 +178,113 @@ const COUNTRY_SINGLE_TZ = {
   'peru': { tz: 'America/Lima', country: 'Peru' },
 };
 
+// IATA airport code -> { tz, city }
+const AIRPORT_TIMEZONES = {
+  // Europe
+  LIS: { tz: 'Europe/Lisbon',     city: 'Lissabon' },
+  OPO: { tz: 'Europe/Lisbon',     city: 'Porto' },
+  FAO: { tz: 'Europe/Lisbon',     city: 'Faro' },
+  BRU: { tz: 'Europe/Brussels',   city: 'Brussel' },
+  AMS: { tz: 'Europe/Amsterdam',  city: 'Amsterdam' },
+  LHR: { tz: 'Europe/London',     city: 'Londen' },
+  LGW: { tz: 'Europe/London',     city: 'Londen' },
+  STN: { tz: 'Europe/London',     city: 'Londen' },
+  LTN: { tz: 'Europe/London',     city: 'Londen' },
+  CDG: { tz: 'Europe/Paris',      city: 'Parijs' },
+  ORY: { tz: 'Europe/Paris',      city: 'Parijs' },
+  BER: { tz: 'Europe/Berlin',     city: 'Berlijn' },
+  MUC: { tz: 'Europe/Berlin',     city: 'München' },
+  FRA: { tz: 'Europe/Berlin',     city: 'Frankfurt' },
+  DUS: { tz: 'Europe/Berlin',     city: 'Düsseldorf' },
+  HAM: { tz: 'Europe/Berlin',     city: 'Hamburg' },
+  FCO: { tz: 'Europe/Rome',       city: 'Rome' },
+  MXP: { tz: 'Europe/Rome',       city: 'Milaan' },
+  VCE: { tz: 'Europe/Rome',       city: 'Venetië' },
+  NAP: { tz: 'Europe/Rome',       city: 'Napels' },
+  MAD: { tz: 'Europe/Madrid',     city: 'Madrid' },
+  BCN: { tz: 'Europe/Madrid',     city: 'Barcelona' },
+  AGP: { tz: 'Europe/Madrid',     city: 'Málaga' },
+  PMI: { tz: 'Europe/Madrid',     city: 'Palma' },
+  VIE: { tz: 'Europe/Vienna',     city: 'Wenen' },
+  ZRH: { tz: 'Europe/Zurich',     city: 'Zürich' },
+  GVA: { tz: 'Europe/Zurich',     city: 'Genève' },
+  CPH: { tz: 'Europe/Copenhagen', city: 'Kopenhagen' },
+  ARN: { tz: 'Europe/Stockholm',  city: 'Stockholm' },
+  OSL: { tz: 'Europe/Oslo',       city: 'Oslo' },
+  HEL: { tz: 'Europe/Helsinki',   city: 'Helsinki' },
+  ATH: { tz: 'Europe/Athens',     city: 'Athene' },
+  SKG: { tz: 'Europe/Athens',     city: 'Thessaloniki' },
+  IST: { tz: 'Europe/Istanbul',   city: 'Istanbul' },
+  SAW: { tz: 'Europe/Istanbul',   city: 'Istanbul' },
+  WAW: { tz: 'Europe/Warsaw',     city: 'Warschau' },
+  PRG: { tz: 'Europe/Prague',     city: 'Praag' },
+  BUD: { tz: 'Europe/Budapest',   city: 'Boedapest' },
+  DUB: { tz: 'Europe/Dublin',     city: 'Dublin' },
+  EDI: { tz: 'Europe/London',     city: 'Edinburgh' },
+  MAN: { tz: 'Europe/London',     city: 'Manchester' },
+  OTP: { tz: 'Europe/Bucharest',  city: 'Boekarest' },
+  SOF: { tz: 'Europe/Sofia',      city: 'Sofia' },
+  // Americas
+  JFK: { tz: 'America/New_York',               city: 'New York' },
+  LGA: { tz: 'America/New_York',               city: 'New York' },
+  EWR: { tz: 'America/New_York',               city: 'Newark' },
+  BOS: { tz: 'America/New_York',               city: 'Boston' },
+  MIA: { tz: 'America/New_York',               city: 'Miami' },
+  ATL: { tz: 'America/New_York',               city: 'Atlanta' },
+  LAX: { tz: 'America/Los_Angeles',            city: 'Los Angeles' },
+  SFO: { tz: 'America/Los_Angeles',            city: 'San Francisco' },
+  SEA: { tz: 'America/Los_Angeles',            city: 'Seattle' },
+  ORD: { tz: 'America/Chicago',                city: 'Chicago' },
+  DFW: { tz: 'America/Chicago',                city: 'Dallas' },
+  DEN: { tz: 'America/Denver',                 city: 'Denver' },
+  YYZ: { tz: 'America/Toronto',                city: 'Toronto' },
+  YVR: { tz: 'America/Vancouver',              city: 'Vancouver' },
+  GRU: { tz: 'America/Sao_Paulo',              city: 'São Paulo' },
+  GIG: { tz: 'America/Sao_Paulo',              city: 'Rio de Janeiro' },
+  EZE: { tz: 'America/Argentina/Buenos_Aires', city: 'Buenos Aires' },
+  BOG: { tz: 'America/Bogota',                 city: 'Bogotá' },
+  LIM: { tz: 'America/Lima',                   city: 'Lima' },
+  MEX: { tz: 'America/Mexico_City',            city: 'Mexico-Stad' },
+  CUN: { tz: 'America/Cancun',                 city: 'Cancún' },
+  // Asia / Middle East
+  NRT: { tz: 'Asia/Tokyo',         city: 'Tokio' },
+  HND: { tz: 'Asia/Tokyo',         city: 'Tokio' },
+  KIX: { tz: 'Asia/Tokyo',         city: 'Osaka' },
+  SIN: { tz: 'Asia/Singapore',     city: 'Singapore' },
+  HKG: { tz: 'Asia/Hong_Kong',     city: 'Hongkong' },
+  PEK: { tz: 'Asia/Shanghai',      city: 'Peking' },
+  PKX: { tz: 'Asia/Shanghai',      city: 'Peking' },
+  PVG: { tz: 'Asia/Shanghai',      city: 'Shanghai' },
+  ICN: { tz: 'Asia/Seoul',         city: 'Seoul' },
+  GMP: { tz: 'Asia/Seoul',         city: 'Seoul' },
+  BKK: { tz: 'Asia/Bangkok',       city: 'Bangkok' },
+  KUL: { tz: 'Asia/Kuala_Lumpur',  city: 'Kuala Lumpur' },
+  CGK: { tz: 'Asia/Jakarta',       city: 'Jakarta' },
+  DEL: { tz: 'Asia/Kolkata',       city: 'Delhi' },
+  BOM: { tz: 'Asia/Kolkata',       city: 'Mumbai' },
+  DXB: { tz: 'Asia/Dubai',         city: 'Dubai' },
+  AUH: { tz: 'Asia/Dubai',         city: 'Abu Dhabi' },
+  DOH: { tz: 'Asia/Qatar',         city: 'Doha' },
+  TLV: { tz: 'Asia/Jerusalem',     city: 'Tel Aviv' },
+  // Africa / Oceania
+  JNB: { tz: 'Africa/Johannesburg', city: 'Johannesburg' },
+  CPT: { tz: 'Africa/Johannesburg', city: 'Kaapstad' },
+  NBO: { tz: 'Africa/Nairobi',      city: 'Nairobi' },
+  CAI: { tz: 'Africa/Cairo',        city: 'Caïro' },
+  CMN: { tz: 'Africa/Casablanca',   city: 'Casablanca' },
+  LOS: { tz: 'Africa/Lagos',        city: 'Lagos' },
+  SYD: { tz: 'Australia/Sydney',    city: 'Sydney' },
+  MEL: { tz: 'Australia/Melbourne', city: 'Melbourne' },
+  BNE: { tz: 'Australia/Brisbane',  city: 'Brisbane' },
+  PER: { tz: 'Australia/Perth',     city: 'Perth' },
+  AKL: { tz: 'Pacific/Auckland',    city: 'Auckland' },
+};
+
+function lookupAirport(code) {
+  if (!code) return null;
+  return AIRPORT_TIMEZONES[code.trim().toUpperCase()] || null;
+}
+
 // --- Timezone helpers ---
 
 function formatTimeInZone(isoString, timezone) {
@@ -275,10 +388,10 @@ async function getUpcomingEvents() {
   return merged;
 }
 
-async function createCalendarEvent(summary, startTime, endTime, description = '', calendarId = CALENDAR_ID, timezone = null) {
+async function createCalendarEvent(summary, startTime, endTime, description = '', calendarId = CALENDAR_ID, timezone = null, endTimezone = null) {
   const calendar = getCalendarClient();
-  const startObj = timezone ? { dateTime: startTime, timeZone: timezone } : { dateTime: startTime };
-  const endObj   = timezone ? { dateTime: endTime,   timeZone: timezone } : { dateTime: endTime };
+  const startObj = timezone              ? { dateTime: startTime, timeZone: timezone }              : { dateTime: startTime };
+  const endObj   = (endTimezone || timezone) ? { dateTime: endTime, timeZone: endTimezone || timezone } : { dateTime: endTime };
   await calendar.events.insert({
     calendarId,
     requestBody: { summary, description, start: startObj, end: endObj },
@@ -410,6 +523,21 @@ async function showCalendarKeyboard(chatId) {
 
 // --- Booking proposal ---
 
+async function showFlightProposal(chatId, booking) {
+  const route = booking.title;
+  const depLine = `Vertrek: ${booking.departureTime} (${booking.departureCity} tijd)`;
+  const arrLine = `Aankomst: ${booking.arrivalTime} (${booking.arrivalCity} tijd)`;
+  const tzWarning = booking.departureTz !== booking.arrivalTz
+    ? '\n\n⚠️ Aankomst is in een andere tijdzone. Tijden zijn al correct per tijdzone.'
+    : '';
+  const message = `✈️ ${route} gevonden\n${depLine}\n${arrLine}${tzWarning}`;
+  await sendInlineKeyboard(message, [[
+    { text: '✅ Inplannen', callback_data: 'book_confirm' },
+    { text: '✏️ Aanpassen', callback_data: 'book_edit_title' },
+    { text: '❌ Annuleren', callback_data: 'book_cancel' },
+  ]]);
+}
+
 async function showBookingProposal(chatId, booking, timezone) {
   const dateDisplay = booking.date ? formatTimeInZone(booking.date, timezone) : 'Date unknown';
   const endDisplay = booking.end_date ? ` → ${formatTimeInZone(booking.end_date, timezone)}` : '';
@@ -460,6 +588,31 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
     summary: booking.summary,
     fileId,
   };
+
+  if (booking.is_flight) {
+    const dep = lookupAirport(booking.departure_airport);
+    const arr = lookupAirport(booking.arrival_airport);
+
+    if (dep && arr) {
+      proposal.isFlight = true;
+      proposal.departureTz   = dep.tz;
+      proposal.arrivalTz     = arr.tz;
+      proposal.departureCity = dep.city;
+      proposal.arrivalCity   = arr.city;
+      proposal.departureTime = booking.departure_time || '';
+      proposal.arrivalTime   = booking.arrival_time || '';
+      cappedSet(pendingBookings, chatId, proposal);
+      await showFlightProposal(chatId, proposal);
+      return;
+    }
+
+    // Airport not in map — fall back to normal proposal with a warning
+    const unknown = [booking.departure_airport, booking.arrival_airport]
+      .filter(a => a && !lookupAirport(a))
+      .join(', ');
+    await sendTelegram(`⚠️ Ik herkende ${unknown} niet in mijn database. Controleer of de tijden kloppen in jouw tijdzone.`);
+  }
+
   cappedSet(pendingBookings, chatId, proposal);
   await showBookingProposal(chatId, proposal, timezone);
 }
@@ -602,7 +755,9 @@ async function handleCallbackQuery(update) {
           return `${datePart}T${nh}:${nm}:00`;
         })();
     const description = (booking.description || '') + `\n\n📎 file_id: ${booking.fileId}`;
-    await createCalendarEvent(booking.title, startIso, endIso, description, calendarId, timezone);
+    const startTz = booking.isFlight ? booking.departureTz : timezone;
+    const endTz   = booking.isFlight ? booking.arrivalTz   : timezone;
+    await createCalendarEvent(booking.title, startIso, endIso, description, calendarId, startTz, endTz);
     pendingBookings.delete(chatId);
     pendingCalendarOptions.delete(chatId);
     await sendTelegram(`✅ ${booking.title} added to ${calendarName}!`);
