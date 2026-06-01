@@ -355,17 +355,11 @@ async function sendMultiTzKeyboard(country, zones) {
   await sendInlineKeyboard(`${country} has multiple timezones. What time is it where you are?`, rows);
 }
 
-// Converts a booking datetime string (extracted from a document) into a naive local ISO string
-// so Google Calendar interprets it as local time in userTimezone, with no additional shift.
-function toLocalBookingIso(dateStr, userTimezone) {
-  const [date, rawTime = '00:00'] = dateStr.split('T');
-  const time = rawTime.replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
-  const dt = new Date(`${date}T${time}`);
-  return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: userTimezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  }).format(dt).replace(' ', 'T') + ':00';
+// Strips any timezone suffix from a booking datetime and returns a clean naive ISO string.
+// Google Calendar interprets it in the timeZone field — no new Date() to avoid UTC shift.
+function toLocalBookingIso(dateStr) {
+  const clean = dateStr.replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '').substring(0, 16);
+  return clean + ':00';
 }
 
 // --- Calendar picker for booking confirmation ---
@@ -566,10 +560,17 @@ async function handleCallbackQuery(update) {
     const { id: calendarId, name: calendarName } = options[index];
     const tzPref = await getUserTimezone(chatId).catch(() => null);
     const timezone = tzPref?.timezone || 'UTC';
-    const startIso = toLocalBookingIso(booking.date, timezone);
+    const startIso = toLocalBookingIso(booking.date);
     const endIso = booking.end_date
-      ? toLocalBookingIso(booking.end_date, timezone)
-      : (() => { const d = new Date(startIso); d.setHours(d.getHours() + 1); return toLocalBookingIso(d.toISOString(), timezone); })();
+      ? toLocalBookingIso(booking.end_date)
+      : (() => {
+          const [datePart, timePart] = startIso.split('T');
+          const [h, m] = timePart.split(':').map(Number);
+          const totalMins = h * 60 + m + 60;
+          const nh = String(Math.floor(totalMins / 60) % 24).padStart(2, '0');
+          const nm = String(totalMins % 60).padStart(2, '0');
+          return `${datePart}T${nh}:${nm}:00`;
+        })();
     const description = (booking.description || '') + `\n\n📎 file_id: ${booking.fileId}`;
     await createCalendarEvent(booking.title, startIso, endIso, description, calendarId, timezone);
     pendingBookings.delete(chatId);
