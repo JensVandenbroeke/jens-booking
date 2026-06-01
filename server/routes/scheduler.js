@@ -440,8 +440,19 @@ Regels:
 - Haal alle beschikbare info uit het bericht voordat je een follow-up vraag stelt.`;
 
   const text = await askAI(prompt);
+  console.log('[processMessage] raw AI response:', text);
   const clean = text.replace(/```json|```/g, '').trim();
-  return JSON.parse(clean);
+
+  try {
+    return JSON.parse(clean);
+  } catch (firstErr) {
+    console.error('[processMessage] JSON parse failed, retrying with short prompt. Raw was:', clean);
+    const retryPrompt = `The user said: "${userMessage}". Respond with ONLY a JSON object, maximum 500 characters, no extra text:\n{"action":"reply","message":"your response here"}`;
+    const retryText = await askAI(retryPrompt);
+    console.log('[processMessage] retry raw AI response:', retryText);
+    const retryClean = retryText.replace(/```json|```/g, '').trim();
+    return JSON.parse(retryClean);
+  }
 }
 
 // --- Routes ---
