@@ -12,10 +12,12 @@ const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 const conversationHistory = new Map();        // chatId -> [{role, content}]
 const timezoneChecked = new Set();            // chatIds with tz check sent this session
 const pendingTimezoneInput = new Map();       // chatId -> true when waiting for typed country
-const pendingBookings = new Map();            // chatId -> booking proposal object
-const pendingTitleEdit = new Map();           // chatId -> true when waiting for new title text
-const pendingDescriptionEdit = new Map();     // chatId -> true when waiting for new description text
-const pendingBookingTimezoneReset = new Set(); // chatIds that re-show booking after tz change
+const pendingBookings = new Map();              // chatId -> booking proposal object
+const pendingTitleEdit = new Map();             // chatId -> true when waiting for new title text
+const pendingDescriptionEdit = new Map();       // chatId -> true when waiting for new description text
+const pendingBookingTimezoneReset = new Set();  // chatIds that re-show booking proposal after tz change
+const pendingBookingAwaitingCalendar = new Set(); // chatIds that go to calendar picker after tz change
+const pendingCalendarOptions = new Map();       // chatId -> [{id, name}] for current calendar picker
 
 // Prompt that instructs Claude to detect booking/event info and return structured JSON
 const BOOKING_DETECTION_PROMPT = `Analyze this content. Does it contain booking, travel, event or appointment information?
@@ -250,16 +252,13 @@ async function getUpcomingEvents() {
   return merged;
 }
 
-async function createCalendarEvent(summary, startTime, endTime, description = '', calendarId = CALENDAR_ID) {
+async function createCalendarEvent(summary, startTime, endTime, description = '', calendarId = CALENDAR_ID, timezone = null) {
   const calendar = getCalendarClient();
+  const startObj = timezone ? { dateTime: startTime, timeZone: timezone } : { dateTime: startTime };
+  const endObj   = timezone ? { dateTime: endTime,   timeZone: timezone } : { dateTime: endTime };
   await calendar.events.insert({
     calendarId,
-    requestBody: {
-      summary,
-      description,
-      start: { dateTime: startTime },
-      end: { dateTime: endTime },
-    },
+    requestBody: { summary, description, start: startObj, end: endObj },
   });
 }
 
@@ -356,6 +355,22 @@ async function sendMultiTzKeyboard(country, zones) {
   await sendInlineKeyboard(`${country} has multiple timezones. What time is it where you are?`, rows);
 }
 
+// --- Calendar picker for booking confirmation ---
+
+async function showCalendarKeyboard(chatId) {
+  let calendars;
+  try {
+    calendars = await getAllCalendars();
+  } catch (err) {
+    await sendTelegram('❌ Could not load calendars: ' + err.message);
+    return;
+  }
+  pendingCalendarOptions.set(chatId, calendars);
+  // Use index-based callback to stay well under Telegram's 64-byte callback_data limit
+  const rows = calendars.map((cal, i) => [{ text: cal.name, callback_data: `book_calendar|${i}` }]);
+  await sendInlineKeyboard('Which calendar should I add this to?', rows);
+}
+
 // --- Booking proposal ---
 
 async function showBookingProposal(chatId, booking, timezone) {
@@ -441,14 +456,21 @@ async function triggerTimezoneCheck(chatId, pref) {
   }
 }
 
-// After a timezone is confirmed or set, re-show any pending booking proposal with updated times
+// After a timezone is confirmed or set, either go to the calendar picker (book_confirm flow)
+// or re-show the booking proposal with corrected times (book_timezone flow)
 async function maybeReshowBookingAfterTzChange(chatId) {
   if (!pendingBookingTimezoneReset.has(chatId)) return;
   pendingBookingTimezoneReset.delete(chatId);
-  const booking = pendingBookings.get(chatId);
-  if (!booking) return;
-  const tzPref = await getUserTimezone(chatId).catch(() => null);
-  await showBookingProposal(chatId, booking, tzPref?.timezone || 'UTC');
+
+  if (pendingBookingAwaitingCalendar.has(chatId)) {
+    pendingBookingAwaitingCalendar.delete(chatId);
+    await showCalendarKeyboard(chatId);
+  } else {
+    const booking = pendingBookings.get(chatId);
+    if (!booking) return;
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    await showBookingProposal(chatId, booking, tzPref?.timezone || 'UTC');
+  }
 }
 
 async function handleCallbackQuery(update) {
@@ -510,11 +532,33 @@ async function handleCallbackQuery(update) {
     const booking = pendingBookings.get(chatId);
     if (!booking) { await sendTelegram('❌ No pending booking found.'); return; }
     if (!booking.date) { await sendTelegram('❌ Cannot create event: no date was found in the document.'); return; }
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    if (!tzPref?.timezone) {
+      // No timezone yet — ask for it first, then proceed to calendar selection
+      pendingBookingTimezoneReset.add(chatId);
+      pendingBookingAwaitingCalendar.add(chatId);
+      await triggerTimezoneCheck(chatId, null);
+    } else {
+      await showCalendarKeyboard(chatId);
+    }
+    return;
+  }
+
+  if (data.startsWith('book_calendar|')) {
+    const index = parseInt(data.slice(14), 10);
+    const options = pendingCalendarOptions.get(chatId);
+    const booking = pendingBookings.get(chatId);
+    if (!options || !options[index]) { await sendTelegram('❌ Calendar not found. Please try again.'); return; }
+    if (!booking) { await sendTelegram('❌ No pending booking found.'); return; }
+    const { id: calendarId, name: calendarName } = options[index];
+    const tzPref = await getUserTimezone(chatId).catch(() => null);
+    const timezone = tzPref?.timezone || null;
     const endTime = booking.end_date || new Date(new Date(booking.date).getTime() + 60 * 60 * 1000).toISOString();
     const description = (booking.description || '') + `\n\n📎 file_id: ${booking.fileId}`;
-    await createCalendarEvent(booking.title, booking.date, endTime, description, CALENDAR_ID);
+    await createCalendarEvent(booking.title, booking.date, endTime, description, calendarId, timezone);
     pendingBookings.delete(chatId);
-    await sendTelegram(`✅ ${booking.title} added to your calendar!`);
+    pendingCalendarOptions.delete(chatId);
+    await sendTelegram(`✅ ${booking.title} added to ${calendarName}!`);
     return;
   }
 
