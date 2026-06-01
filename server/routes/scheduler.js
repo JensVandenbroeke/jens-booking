@@ -1,6 +1,6 @@
 const express = require('express');
 const { google } = require('googleapis');
-const { askAI } = require('../lib/ai');
+const { askAI, askClaudeVision } = require('../lib/ai');
 const { getUserTimezone, saveUserTimezone } = require('../db');
 
 const router = express.Router();
@@ -254,6 +254,17 @@ async function createCalendarEvent(summary, startTime, endTime, description = ''
   });
 }
 
+// --- Photo helpers ---
+
+async function downloadTelegramPhoto(fileId) {
+  const fileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`);
+  const fileData = await fileRes.json();
+  const filePath = fileData.result.file_path;
+  const photoRes = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`);
+  const arrayBuffer = await photoRes.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString('base64');
+}
+
 // --- Telegram helpers ---
 
 async function sendTelegram(text) {
@@ -475,13 +486,32 @@ router.post('/webhook', async (req, res) => {
     if (chatId !== TELEGRAM_CHAT_ID) return;
 
     const text = update.message.text;
-    if (!text) {
-      await sendTelegram('Ik begrijp momenteel alleen tekstberichten. Voiceberichten komen binnenkort!');
+    const photos = update.message.photo;
+
+    if (!text && !photos) {
+      await sendTelegram('Ik begrijp momenteel alleen tekstberichten en afbeeldingen. Voiceberichten komen binnenkort!');
+      return;
+    }
+
+    // Handle photo messages (Claude only)
+    if (photos) {
+      const aiProvider = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+      if (aiProvider !== 'claude') {
+        await sendTelegram('📷 Photo support is only available when using Claude as the AI provider.');
+        return;
+      }
+      await sendTelegram('⏳ Analysing image...');
+      const highestRes = photos[photos.length - 1];
+      const base64data = await downloadTelegramPhoto(highestRes.file_id);
+      const caption = update.message.caption || '';
+      const reply = await askClaudeVision(base64data, caption);
+      await sendTelegram(reply);
+      saveHistory(chatId, caption || '[image]', reply);
       return;
     }
 
     // Handle pending country name input (from "Other country" button)
-    if (pendingTimezoneInput.get(chatId)) {
+    if (text && pendingTimezoneInput.get(chatId)) {
       pendingTimezoneInput.delete(chatId);
       const result = lookupCountry(text);
       if (!result) {
