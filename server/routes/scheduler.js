@@ -7,6 +7,7 @@ const router = express.Router();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // In-memory state
 const conversationHistory = new Map();        // chatId -> [{role, content}]
@@ -539,6 +540,24 @@ async function downloadTelegramFile(fileId) {
   return { base64: Buffer.from(arrayBuffer).toString('base64'), fileId };
 }
 
+// --- Voice transcription ---
+
+async function transcribeVoice(fileId) {
+  const { base64 } = await downloadTelegramFile(fileId);
+  const buffer = Buffer.from(base64, 'base64');
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer], { type: 'audio/ogg' }), 'audio.ogg');
+  formData.append('model', 'whisper-1');
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || 'Whisper API error');
+  return data.text;
+}
+
 // --- Telegram helpers ---
 
 async function sendTelegram(text) {
@@ -989,16 +1008,59 @@ router.post('/webhook', async (req, res) => {
     const text = update.message.text;
     const photos = update.message.photo;
     const doc = update.message.document;
+    const voice = update.message.voice || update.message.audio;
     const isPdf = doc?.mime_type === 'application/pdf';
 
-    if (!text && !photos && !isPdf) {
-      await sendTelegram('Ik begrijp momenteel tekstberichten, afbeeldingen en PDF-bestanden. Voiceberichten komen binnenkort!');
+    if (!text && !photos && !isPdf && !voice) {
+      await sendTelegram('Ik begrijp momenteel tekstberichten, afbeeldingen, PDF-bestanden en voiceberichten.');
       return;
     }
 
-    // Fetch timezone early — needed for photo/PDF proposals and text processing
+    // Fetch timezone early — needed for all message types
     const tzPref = await getUserTimezone(chatId).catch(() => null);
     const timezone = tzPref?.timezone || 'UTC';
+
+    // Handle voice messages — transcribe via Whisper then process as text
+    if (voice) {
+      await sendTelegram('🎙️ Even luisteren...');
+      let transcription;
+      try {
+        transcription = await transcribeVoice(voice.file_id);
+      } catch (err) {
+        console.error('transcribeVoice error:', err.message);
+        await sendTelegram('❌ Kon het audiobericht niet verstaan. Probeer opnieuw of stuur een tekstbericht.');
+        return;
+      }
+      await sendTelegram(`📝 Ik hoorde: "${transcription}"`);
+
+      if (!timezoneChecked.has(chatId)) {
+        await triggerTimezoneCheck(chatId, tzPref);
+      }
+
+      await sendTelegram('⏳ Even nadenken...');
+      const voiceHistory = getHistory(chatId);
+      const voiceResponse = await processMessage(transcription, voiceHistory, timezone);
+      let voiceReply;
+      if (voiceResponse.action === 'create_event') {
+        const calendarId = voiceResponse.calendar_id || CALENDAR_ID;
+        await createCalendarEvent(voiceResponse.summary, voiceResponse.start, voiceResponse.end, voiceResponse.description, calendarId);
+        voiceReply = `✅ ${voiceResponse.message}`;
+      } else if (voiceResponse.action === 'retrieve_file') {
+        const found = await findFileInCalendar(voiceResponse.date_hint);
+        if (found) {
+          await sendTelegram(`📎 Found: ${found.event.summary}`);
+          await sendTelegramDocument(found.fileId);
+          voiceReply = `📎 ${found.event.summary} sent!`;
+        } else {
+          voiceReply = `❓ No document found around ${voiceResponse.date_hint}.`;
+        }
+      } else {
+        voiceReply = voiceResponse.message;
+      }
+      await sendTelegram(voiceReply);
+      saveHistory(chatId, transcription, voiceReply);
+      return;
+    }
 
     // Handle photo messages — booking detection via Claude vision (always uses ANTHROPIC_API_KEY directly)
     if (photos) {
