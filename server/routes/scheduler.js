@@ -1065,21 +1065,44 @@ ${historyText}
 Bericht van Jens: "${userMessage}"
 
 Je taken:
-1. Als Jens iets wil inplannen, geef dan een JSON response met:
-   {"action": "create_event", "summary": "naam", "start": "ISO datetime", "end": "ISO datetime", "description": "optionele beschrijving", "calendar_id": "id van de juiste agenda", "message": "bevestiging voor Jens"}
-2. Als Jens zijn agenda wil zien, geef dan:
+1. Als Jens iets wil inplannen, extraheer dan EERST alle beschikbare info uit het bericht én de gespreksgeschiedenis:
+   - titel (verplicht)
+   - datum (verplicht)
+   - tijd (verplicht)
+   - duur (optioneel — standaard 1 uur als niet vermeld, nooit vragen)
+   - tijdzone: gebruik altijd ${timezone}
+   - agenda (optioneel — vraag welke agenda als niet duidelijk)
+   - beschrijving (optioneel — weglaten als niet vermeld, nooit vragen)
+   - locatie (optioneel — weglaten als niet vermeld, nooit vragen)
+
+   Als titel, datum EN tijd allemaal beschikbaar zijn:
+   → Maak het event onmiddellijk aan:
+   {"action": "create_event", "summary": "titel", "start": "ISO datetime", "end": "ISO datetime", "calendar_id": "id", "message": "bevestiging"}
+
+   Als de agenda niet vermeld is maar de rest wel:
+   → Vraag alleen welke agenda:
+   {"action": "reply", "message": "korte vraag over agenda"}
+
+   Als één of meer verplichte velden ontbreken (titel, datum of tijd):
+   → Vraag ALLEEN naar het/de ontbrekende veld(en), één vraag tegelijk:
+   {"action": "reply", "message": "korte gerichte vraag"}
+
+2. Als Jens zijn agenda wil zien:
    {"action": "show_agenda", "message": "overzicht van de agenda"}
+
 3. Als Jens een document, ticket of bestand wil terugvinden aan de hand van een datum:
    {"action": "retrieve_file", "date_hint": "YYYY-MM-DD", "message": "zoeken..."}
+
 4. Voor andere vragen:
    {"action": "reply", "message": "jouw antwoord"}
 
 Regels:
-- Detect the language Jens uses in his message and always respond in that same language. If he writes in Dutch, respond in Dutch. If he writes in English, respond in English.
+- Detect the language Jens uses and always respond in that same language.
 - Reageer ALLEEN met valid JSON, geen extra tekst.
-- Vraag NOOIT om informatie die al in de gespreksgeschiedenis of het huidige bericht staat.
-- Kies ALTIJD de meest passende agenda uit de beschikbare lijst op basis van de context.
-- Haal alle beschikbare info uit het bericht voordat je een follow-up vraag stelt.`;
+- Vraag NOOIT naar iets wat al in het bericht of de gespreksgeschiedenis staat.
+- Vraag NOOIT naar duur, beschrijving of locatie — gebruik standaardwaarden of laat weg.
+- Kies de meest passende agenda op basis van context als die duidelijk is.
+- Stel maximaal één vraag per antwoord.`;
 
   const text = await askAI(prompt);
   console.log('[processMessage] raw AI response:', text);
