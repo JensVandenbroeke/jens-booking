@@ -44,7 +44,7 @@ CRITICAL: Extract times EXACTLY as written in the document. Do NOT convert or ad
 
 Rules:
 - IMPORTANT: Copy times EXACTLY as they appear in the document. If you see 13:15, output 13:15. Never modify times.
-- For flights: set "is_flight" to true, extract "departure_airport" (IATA code if visible, otherwise city name), "arrival_airport" (same), "departure_time" (exact HH:MM from document), "arrival_time" (exact HH:MM from document). Set "date" to the full departure datetime (YYYY-MM-DDTHH:MM:00) and "end_date" to the full arrival datetime.
+- For flights: set "is_flight" to true. Extract "departure_airport_code" (IATA code if visible, e.g. "LIS"), "arrival_airport_code" (e.g. "BER"), "departure_airport_city" (city name), "arrival_airport_city" (city name), "departure_time" (exact HH:MM from document), "arrival_time" (exact HH:MM from document). Set "date" to the full departure datetime (YYYY-MM-DDTHH:MM:00) and "end_date" to the full arrival datetime.
 
 Return ONLY a valid JSON object with no other text:
 {
@@ -56,8 +56,10 @@ Return ONLY a valid JSON object with no other text:
   "date": "ISO 8601 datetime string or null",
   "end_date": "ISO 8601 datetime string or null",
   "timezone_hint": "timezone identifier found in the document or null",
-  "departure_airport": "IATA code or city name or null",
-  "arrival_airport": "IATA code or city name or null",
+  "departure_airport_code": "IATA code or null",
+  "arrival_airport_code": "IATA code or null",
+  "departure_airport_city": "city name or null",
+  "arrival_airport_city": "city name or null",
   "departure_time": "HH:MM as written in document or null",
   "arrival_time": "HH:MM as written in document or null",
   "summary": "brief human-readable summary of what this content is"
@@ -185,6 +187,7 @@ const AIRPORT_TIMEZONES = {
   OPO: { tz: 'Europe/Lisbon',     city: 'Porto' },
   FAO: { tz: 'Europe/Lisbon',     city: 'Faro' },
   BRU: { tz: 'Europe/Brussels',   city: 'Brussel' },
+  ANR: { tz: 'Europe/Brussels',   city: 'Antwerpen' },
   AMS: { tz: 'Europe/Amsterdam',  city: 'Amsterdam' },
   LHR: { tz: 'Europe/London',     city: 'Londen' },
   LGW: { tz: 'Europe/London',     city: 'Londen' },
@@ -524,13 +527,12 @@ async function showCalendarKeyboard(chatId) {
 // --- Booking proposal ---
 
 async function showFlightProposal(chatId, booking) {
-  const route = booking.title;
-  const depLine = `Vertrek: ${booking.departureTime} (${booking.departureCity} tijd)`;
-  const arrLine = `Aankomst: ${booking.arrivalTime} (${booking.arrivalCity} tijd)`;
-  const tzWarning = booking.departureTz !== booking.arrivalTz
-    ? '\n\n⚠️ Aankomst is in een andere tijdzone. Tijden zijn al correct per tijdzone.'
-    : '';
-  const message = `✈️ ${route} gevonden\n${depLine}\n${arrLine}${tzWarning}`;
+  const depLine = `Vertrek: ${booking.departureTime} (${booking.departureCity} tijd - ${booking.departureTz})`;
+  const arrLine = `Aankomst: ${booking.arrivalTime} (${booking.arrivalCity} tijd - ${booking.arrivalTz})`;
+  const message =
+    `✈️ ${booking.departureCity} → ${booking.arrivalCity}\n\n` +
+    `${depLine}\n${arrLine}\n\n` +
+    `Tijden zijn correct per tijdzone van elk luchthaven.`;
   await sendInlineKeyboard(message, [[
     { text: '✅ Inplannen', callback_data: 'book_confirm' },
     { text: '✏️ Aanpassen', callback_data: 'book_edit_title' },
@@ -590,27 +592,32 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
   };
 
   if (booking.is_flight) {
-    const dep = lookupAirport(booking.departure_airport);
-    const arr = lookupAirport(booking.arrival_airport);
+    const dep = lookupAirport(booking.departure_airport_code);
+    const arr = lookupAirport(booking.arrival_airport_code);
 
     if (dep && arr) {
-      proposal.isFlight = true;
+      proposal.isFlight      = true;
       proposal.departureTz   = dep.tz;
       proposal.arrivalTz     = arr.tz;
       proposal.departureCity = dep.city;
       proposal.arrivalCity   = arr.city;
       proposal.departureTime = booking.departure_time || '';
       proposal.arrivalTime   = booking.arrival_time || '';
-      cappedSet(pendingBookings, chatId, proposal);
-      await showFlightProposal(chatId, proposal);
-      return;
-    }
+      proposal.title         = `✈️ ${dep.city} → ${arr.city}`;
 
-    // Airport not in map — fall back to normal proposal with a warning
-    const unknown = [booking.departure_airport, booking.arrival_airport]
-      .filter(a => a && !lookupAirport(a))
-      .join(', ');
-    await sendTelegram(`⚠️ Ik herkende ${unknown} niet in mijn database. Controleer of de tijden kloppen in jouw tijdzone.`);
+      if (dep.tz !== arr.tz) {
+        cappedSet(pendingBookings, chatId, proposal);
+        await showFlightProposal(chatId, proposal);
+        return;
+      }
+      // Same timezone — fall through to normal proposal below
+    } else {
+      // One or both airports not in map — warn and fall through
+      const unknown = [booking.departure_airport_code, booking.arrival_airport_code]
+        .filter(a => a && !lookupAirport(a))
+        .join(', ');
+      if (unknown) await sendTelegram(`⚠️ Luchthaven tijdzone niet herkend voor: ${unknown}. Controleer de tijden.`);
+    }
   }
 
   cappedSet(pendingBookings, chatId, proposal);
