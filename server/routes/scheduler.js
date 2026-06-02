@@ -1,7 +1,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { askAI, askClaudeVision, askClaudePdf } = require('../lib/ai');
-const { getUserTimezone, saveUserTimezone, getLearnedAirport, saveLearnedAirport } = require('../db');
+const { getUserTimezone, saveUserTimezone, saveTimezoneCheckedDate, getLearnedAirport, saveLearnedAirport } = require('../db');
 
 const router = express.Router();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -11,7 +11,6 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // In-memory state
 const conversationHistory = new Map();        // chatId -> [{role, content}]
-const timezoneChecked = new Set();            // chatIds with tz check sent this session
 const pendingTimezoneInput = new Map();       // chatId -> true when waiting for typed country
 const pendingBookings = new Map();              // chatId -> booking proposal object
 const pendingTitleEdit = new Map();             // chatId -> true when waiting for new title text
@@ -824,7 +823,6 @@ async function handleFileAnalysis(chatId, rawResult, fileId, timezone) {
 // --- Timezone check flow ---
 
 async function triggerTimezoneCheck(chatId, pref) {
-  cappedAdd(timezoneChecked, chatId);
   try {
     if (pref?.timezone) {
       const currentTime = getCurrentTimeStr(pref.timezone);
@@ -845,6 +843,7 @@ async function triggerTimezoneCheck(chatId, pref) {
         ]]
       );
     }
+    await saveTimezoneCheckedDate(chatId);
   } catch (err) {
     console.error('triggerTimezoneCheck error:', err.message);
   }
@@ -879,7 +878,9 @@ async function handleCallbackQuery(update) {
   if (data === 'tz_confirm') {
     const pref = await getUserTimezone(chatId).catch(() => null);
     const country = pref?.timezone_country || 'your timezone';
-    await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    if (!pendingBookingTimezoneReset.has(chatId)) {
+      await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    }
     await maybeReshowBookingAfterTzChange(chatId);
     return;
   }
@@ -903,7 +904,9 @@ async function handleCallbackQuery(update) {
     const result = lookupCountry(choice.toLowerCase());
     if (result && result.type === 'single') {
       await saveUserTimezone(chatId, result.tz, result.country);
-      await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+      if (!pendingBookingTimezoneReset.has(chatId)) {
+        await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+      }
       await maybeReshowBookingAfterTzChange(chatId);
     }
     return;
@@ -915,7 +918,9 @@ async function handleCallbackQuery(update) {
     const tz = parts[0];
     const country = parts[1];
     await saveUserTimezone(chatId, tz, country);
-    await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    if (!pendingBookingTimezoneReset.has(chatId)) {
+      await sendTelegram(`✅ Got it! I'm using ${country} time. How can I help you?`);
+    }
     await maybeReshowBookingAfterTzChange(chatId);
     return;
   }
@@ -1036,8 +1041,27 @@ function saveHistory(chatId, userMessage, botResponse) {
 
 // --- AI ---
 
+function findCalendarInText(text, calendars) {
+  const lower = text.toLowerCase();
+  for (const cal of calendars) {
+    const name = cal.name.toLowerCase();
+    const stem = name.replace(/\s*agenda\s*$/, '').trim();
+    for (const candidate of [name, stem]) {
+      if (candidate.length < 3) continue;
+      const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, 'i').test(lower)) return cal;
+    }
+  }
+  return null;
+}
+
 async function processMessage(userMessage, history = [], timezone = 'UTC') {
   const [events, calendars] = await Promise.all([getUpcomingEvents(), getAllCalendars()]);
+
+  const detectedCalendar = findCalendarInText(userMessage, calendars);
+  const calendarHint = detectedCalendar
+    ? `\nGebruiker heeft agenda "${detectedCalendar.name}" (id: "${detectedCalendar.id}") vermeld — gebruik deze calendar_id direct, vraag niet welke agenda.\n`
+    : '';
 
   const eventsText = events.map(e => {
     const displayTime = e.start.dateTime ? formatTimeInZone(e.start.dateTime, timezone) : e.start.date;
@@ -1061,7 +1085,7 @@ ${calendarsText || 'Geen agenda\'s gevonden'}
 Jens zijn agenda voor de komende week (tijden in ${timezone}):
 ${eventsText || 'Geen afspraken gevonden'}
 ${historyText}
-
+${calendarHint}
 Bericht van Jens: "${userMessage}"
 
 Je taken:
@@ -1167,7 +1191,8 @@ router.post('/webhook', async (req, res) => {
       }
       await sendTelegram(`📝 Ik hoorde: "${transcription}"`);
 
-      if (!timezoneChecked.has(chatId)) {
+      const voiceToday = new Date().toISOString().slice(0, 10);
+      if (tzPref?.timezone_checked_date !== voiceToday) {
         await triggerTimezoneCheck(chatId, tzPref);
       }
 
@@ -1267,7 +1292,9 @@ router.post('/webhook', async (req, res) => {
       }
       if (result.type === 'single') {
         await saveUserTimezone(chatId, result.tz, result.country);
-        await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+        if (!pendingBookingTimezoneReset.has(chatId)) {
+          await sendTelegram(`✅ Got it! I'm using ${result.country} time. How can I help you?`);
+        }
         await maybeReshowBookingAfterTzChange(chatId);
       } else {
         await sendMultiTzKeyboard(result.country, result.zones);
@@ -1275,8 +1302,9 @@ router.post('/webhook', async (req, res) => {
       return;
     }
 
-    // First message of session: send timezone check
-    if (!timezoneChecked.has(chatId)) {
+    // Once per day: send timezone check
+    const today = new Date().toISOString().slice(0, 10);
+    if (tzPref?.timezone_checked_date !== today) {
       await triggerTimezoneCheck(chatId, tzPref);
     }
 

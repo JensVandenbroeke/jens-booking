@@ -29,6 +29,9 @@ async function initDb() {
     )
   `);
   await pool.query(`
+    ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS timezone_checked_date DATE
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS learned_airports (
       code TEXT PRIMARY KEY,
       timezone TEXT NOT NULL,
@@ -87,10 +90,18 @@ async function markReminderSent(id,type) {
 }
 async function getUserTimezone(chatId) {
   const res = await pool.query(
-    'SELECT timezone, timezone_country FROM user_preferences WHERE chat_id=$1',
+    'SELECT timezone, timezone_country, timezone_checked_date::TEXT as timezone_checked_date FROM user_preferences WHERE chat_id=$1',
     [chatId]
   );
   return res.rows[0] || null;
+}
+async function saveTimezoneCheckedDate(chatId) {
+  await pool.query(
+    `INSERT INTO user_preferences (chat_id, timezone_checked_date, updated_at)
+     VALUES ($1, CURRENT_DATE, NOW())
+     ON CONFLICT (chat_id) DO UPDATE SET timezone_checked_date=CURRENT_DATE, updated_at=NOW()`,
+    [chatId]
+  );
 }
 async function saveUserTimezone(chatId, timezone, country) {
   await pool.query(
@@ -117,4 +128,4 @@ async function saveLearnedAirport(code, timezone, chatId) {
 }
 module.exports={initDb,getNextBookingNumber,saveBooking,updateBookingMeetLink,
   cancelBooking,getBookings,findBookingById,getBookingsForReminders,markReminderSent,
-  getUserTimezone,saveUserTimezone,getLearnedAirport,saveLearnedAirport};
+  getUserTimezone,saveUserTimezone,saveTimezoneCheckedDate,getLearnedAirport,saveLearnedAirport};
