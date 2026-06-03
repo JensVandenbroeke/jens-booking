@@ -1202,7 +1202,14 @@ router.post('/webhook', async (req, res) => {
       let voiceReply;
       if (voiceResponse.action === 'create_event') {
         const calendarId = voiceResponse.calendar_id || CALENDAR_ID;
-        await createCalendarEvent(voiceResponse.summary, voiceResponse.start, voiceResponse.end, voiceResponse.description, calendarId);
+        console.log('[create_event] calendarId:', calendarId, 'start:', voiceResponse.start, 'end:', voiceResponse.end);
+        try {
+          await createCalendarEvent(voiceResponse.summary, voiceResponse.start, voiceResponse.end, voiceResponse.description, calendarId);
+          console.log('[create_event] event created successfully');
+        } catch (err) {
+          console.error('[create_event] createCalendarEvent error:', err.message);
+          throw err;
+        }
         voiceReply = `✅ ${voiceResponse.message}`;
       } else if (voiceResponse.action === 'retrieve_file') {
         const found = await findFileInCalendar(voiceResponse.date_hint);
@@ -1316,7 +1323,14 @@ router.post('/webhook', async (req, res) => {
     let botReply;
     if (response.action === 'create_event') {
       const calendarId = response.calendar_id || CALENDAR_ID;
-      await createCalendarEvent(response.summary, response.start, response.end, response.description, calendarId);
+      console.log('[create_event] calendarId:', calendarId, 'start:', response.start, 'end:', response.end);
+      try {
+        await createCalendarEvent(response.summary, response.start, response.end, response.description, calendarId);
+        console.log('[create_event] event created successfully');
+      } catch (err) {
+        console.error('[create_event] createCalendarEvent error:', err.message);
+        throw err;
+      }
       botReply = `✅ ${response.message}`;
     } else if (response.action === 'retrieve_file') {
       const found = await findFileInCalendar(response.date_hint);
