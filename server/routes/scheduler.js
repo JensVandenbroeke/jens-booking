@@ -1203,9 +1203,12 @@ router.post('/webhook', async (req, res) => {
       let voiceReply;
       if (voiceResponse.action === 'create_event') {
         const calendarId = voiceResponse.calendar_id || CALENDAR_ID;
-        console.log('[create_event] calendarId:', calendarId, 'start:', voiceResponse.start, 'end:', voiceResponse.end);
+        const userTz = tzPref?.timezone || 'Europe/Lisbon';
+        const cleanStart = toLocalBookingIso(voiceResponse.start);
+        const cleanEnd = toLocalBookingIso(voiceResponse.end);
+        console.log('[create_event] calendarId:', calendarId, 'start:', cleanStart, 'end:', cleanEnd);
         try {
-          await createCalendarEvent(voiceResponse.summary, voiceResponse.start, voiceResponse.end, voiceResponse.description, calendarId);
+          await createCalendarEvent(voiceResponse.summary, cleanStart, cleanEnd, voiceResponse.description, calendarId, userTz);
           console.log('[create_event] event created successfully');
         } catch (err) {
           console.error('[create_event] createCalendarEvent error:', err.message);
@@ -1324,9 +1327,12 @@ router.post('/webhook', async (req, res) => {
     let botReply;
     if (response.action === 'create_event') {
       const calendarId = response.calendar_id || CALENDAR_ID;
-      console.log('[create_event] calendarId:', calendarId, 'start:', response.start, 'end:', response.end);
+      const userTz = tzPref?.timezone || 'Europe/Lisbon';
+      const cleanStart = toLocalBookingIso(response.start);
+      const cleanEnd = toLocalBookingIso(response.end);
+      console.log('[create_event] calendarId:', calendarId, 'start:', cleanStart, 'end:', cleanEnd);
       try {
-        await createCalendarEvent(response.summary, response.start, response.end, response.description, calendarId);
+        await createCalendarEvent(response.summary, cleanStart, cleanEnd, response.description, calendarId, userTz);
         console.log('[create_event] event created successfully');
       } catch (err) {
         console.error('[create_event] createCalendarEvent error:', err.message);
