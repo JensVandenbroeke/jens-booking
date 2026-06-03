@@ -1077,7 +1077,7 @@ async function processMessage(userMessage, history = [], timezone = 'UTC') {
   const nowDisplay = formatTimeInZone(new Date().toISOString(), timezone);
 
   const prompt = `Je bent een persoonlijke planning assistent voor Jens Vandenbroeke.
-Huidige tijd: ${nowDisplay} (${timezone})
+Huidige datum en tijd: ${nowDisplay} (jaar is ${new Date().getFullYear()}). Alle events moeten in het jaar ${new Date().getFullYear()} of later aangemaakt worden, nooit in het verleden.
 
 Beschikbare agenda's:
 ${calendarsText || 'Geen agenda\'s gevonden'}
@@ -1121,6 +1121,7 @@ Je taken:
    {"action": "reply", "message": "jouw antwoord"}
 
 Regels:
+- CRITICAL: Always use the current year (${new Date().getFullYear()}) when creating events. Never create events in past years.
 - Detect the language Jens uses and always respond in that same language.
 - Reageer ALLEEN met valid JSON, geen extra tekst.
 - Vraag NOOIT naar iets wat al in het bericht of de gespreksgeschiedenis staat.
